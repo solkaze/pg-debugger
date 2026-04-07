@@ -21,12 +21,12 @@ brew install gdb gcc
 
 ```sh
 # Linux
-curl -L -o pg-debugger https://github.com/<owner>/<repo>/releases/latest/download/pg-debugger-linux-x86_64
+curl -L -o pg-debugger https://github.com/solkaze/pg-debugger/releases/latest/download/pg-debugger-linux-x86_64
 chmod +x pg-debugger
 sudo mv pg-debugger /usr/local/bin/
 
 # macOS
-curl -L -o pg-debugger https://github.com/<owner>/<repo>/releases/latest/download/pg-debugger-macos-x86_64
+curl -L -o pg-debugger https://github.com/solkaze/pg-debugger/releases/latest/download/pg-debugger-macos-x86_64
 chmod +x pg-debugger
 sudo mv pg-debugger /usr/local/bin/
 ```
