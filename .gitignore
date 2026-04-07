@@ -7,3 +7,4 @@ example.c
 src/
 # コンパイル済みバイナリ（拡張子なし）
 /example
+claude.md
