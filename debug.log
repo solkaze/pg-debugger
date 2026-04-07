@@ -1,46 +1,91 @@
-[2m2026-04-07T12:37:28.787918Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-group-added,id="i1"
-[2m2026-04-07T12:37:28.787948Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"GNU gdb (Fedora Linux) 17.1-4.fc43\n"
-[2m2026-04-07T12:37:28.787957Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Copyright (C) 2025 Free Software Foundation, Inc.\n"
-[2m2026-04-07T12:37:28.787961Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law."
-[2m2026-04-07T12:37:28.787966Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\nType \""
-[2m2026-04-07T12:37:28.787969Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"show copying\" and \"show warranty\" for details.\n"
-[2m2026-04-07T12:37:28.787973Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"This GDB was configured as \"x86_64-redhat-linux-gnu\".\n"
-[2m2026-04-07T12:37:28.787977Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Type \"show configuration\" for configuration details.\n"
-[2m2026-04-07T12:37:28.787980Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"For bug reporting instructions, please see:\n"
-[2m2026-04-07T12:37:28.787984Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"<https://www.gnu.org/software/gdb/bugs/>.\n"
-[2m2026-04-07T12:37:28.787987Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Find the GDB manual and other documentation resources online at:\n    <"
-[2m2026-04-07T12:37:28.787991Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"http://www.gnu.org/software/gdb/documentation/>.\n\n"
-[2m2026-04-07T12:37:28.787995Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"For help, type \"help\".\n"
-[2m2026-04-07T12:37:28.787998Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Type \"apropos word\" to search for commands related to \"word\"...\n"
-[2m2026-04-07T12:37:28.788787Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Reading symbols from /tmp/pg-debugger-example-179928...\n"
-[2m2026-04-07T12:37:28.788929Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
-[2m2026-04-07T12:37:28.788943Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =cmd-param-changed,param="inferior-tty",value="/dev/pts/1"
-[2m2026-04-07T12:37:28.788947Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done
-[2m2026-04-07T12:37:28.788951Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
-[2m2026-04-07T12:37:28.789152Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x00000000004006fe",func="main",file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="73",thread-groups=["i1"],times="0",original-location="main"}
-[2m2026-04-07T12:37:28.789178Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
-[2m2026-04-07T12:37:28.789396Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-group-started,id="i1",pid="179992"
-[2m2026-04-07T12:37:28.789400Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-created,id="1",group-id="i1"
-[2m2026-04-07T12:37:28.792467Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =library-loaded,id="/lib64/ld-linux-x86-64.so.2",target-name="/lib64/ld-linux-x86-64.so.2",host-name="/lib64/ld-linux-x86-64.so.2",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7fc5000",to="0x00007ffff7fff000"}]
-[2m2026-04-07T12:37:28.794853Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\nThis GDB supports auto-downloading debuginfo from the following URLs:\n"
-[2m2026-04-07T12:37:28.794872Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <ima:enforcing>\n"
-[2m2026-04-07T12:37:28.794879Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <https://debuginfod.fedoraproject.org/>\n"
-[2m2026-04-07T12:37:28.794883Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <ima:ignore>\n"
-[2m2026-04-07T12:37:28.794886Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]\n"
-[2m2026-04-07T12:37:28.794891Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Debuginfod has been disabled.\nTo make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.\n"
-[2m2026-04-07T12:37:28.797268Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
-[2m2026-04-07T12:37:28.797273Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
-[2m2026-04-07T12:37:28.797279Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
-[2m2026-04-07T12:37:28.800616Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =library-loaded,id="/lib64/libc.so.6",target-name="/lib64/libc.so.6",host-name="/lib64/libc.so.6",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7dad000",to="0x00007ffff7fa0000"}]
-[2m2026-04-07T12:37:28.806295Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"[Thread debugging using libthread_db enabled]\n"
-[2m2026-04-07T12:37:28.806303Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Using host libthread_db library \"/lib64/libthread_db.so.1\".\n"
-[2m2026-04-07T12:37:28.807266Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =breakpoint-modified,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x00000000004006fe",func="main",file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="73",thread-groups=["i1"],times="1",original-location="main"}
-[2m2026-04-07T12:37:28.807332Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\n"
-[2m2026-04-07T12:37:28.807336Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Breakpoint 1, main () at ./example.c:73\n"
-[2m2026-04-07T12:37:28.807340Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"73\t    printf(\"=== \345\233\233\345\211\207\346\274\224\347\256\227 ===\\n\");\n"
-[2m2026-04-07T12:37:28.807345Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="breakpoint-hit",disp="keep",bkptno="1",frame={addr="0x00000000004006fe",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="73",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="30"
-[2m2026-04-07T12:37:28.807363Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
-[2m2026-04-07T12:37:28.808655Z[0m [32m INFO[0m [2mpg_debuger::app[0m[2m:[0m ソースファイル読み込み: /home/solkaze/Projects/pg-debuger/example.c
-[2m2026-04-07T12:37:28.808700Z[0m [32m INFO[0m [2mpg_debuger::app[0m[2m:[0m 読み込み完了: 111 行
-[2m2026-04-07T12:37:28.809045Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="x",type="int",value="0"},{name="y",type="int",value="0"},{name="arr",type="int [7]"},{name="size",type="int",value="0"}]
-[2m2026-04-07T12:37:28.809059Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.245116Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-group-added,id="i1"
+[2m2026-04-07T13:50:52.245149Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"GNU gdb (Fedora Linux) 17.1-4.fc43\n"
+[2m2026-04-07T13:50:52.245159Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Copyright (C) 2025 Free Software Foundation, Inc.\n"
+[2m2026-04-07T13:50:52.245164Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law."
+[2m2026-04-07T13:50:52.245170Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\nType \""
+[2m2026-04-07T13:50:52.245173Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"show copying\" and \"show warranty\" for details.\n"
+[2m2026-04-07T13:50:52.245178Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"This GDB was configured as \"x86_64-redhat-linux-gnu\".\n"
+[2m2026-04-07T13:50:52.245182Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Type \"show configuration\" for configuration details.\n"
+[2m2026-04-07T13:50:52.245186Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"For bug reporting instructions, please see:\n"
+[2m2026-04-07T13:50:52.245190Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"<https://www.gnu.org/software/gdb/bugs/>.\n"
+[2m2026-04-07T13:50:52.245194Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Find the GDB manual and other documentation resources online at:\n    <"
+[2m2026-04-07T13:50:52.245198Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"http://www.gnu.org/software/gdb/documentation/>.\n\n"
+[2m2026-04-07T13:50:52.245202Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"For help, type \"help\".\n"
+[2m2026-04-07T13:50:52.245206Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Type \"apropos word\" to search for commands related to \"word\"...\n"
+[2m2026-04-07T13:50:52.245974Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Reading symbols from /tmp/pg-debugger-example-217180...\n"
+[2m2026-04-07T13:50:52.246086Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.246111Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =cmd-param-changed,param="inferior-tty",value="/dev/pts/2"
+[2m2026-04-07T13:50:52.246116Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done
+[2m2026-04-07T13:50:52.246119Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.246128Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =cmd-param-changed,param="startup-with-shell",value="off"
+[2m2026-04-07T13:50:52.246132Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done
+[2m2026-04-07T13:50:52.246136Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.246370Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x00000000004004b2",func="main",file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="12",thread-groups=["i1"],times="0",original-location="main"}
+[2m2026-04-07T13:50:52.246386Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.246542Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-group-started,id="i1",pid="217247"
+[2m2026-04-07T13:50:52.246547Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =thread-created,id="1",group-id="i1"
+[2m2026-04-07T13:50:52.248393Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =library-loaded,id="/lib64/ld-linux-x86-64.so.2",target-name="/lib64/ld-linux-x86-64.so.2",host-name="/lib64/ld-linux-x86-64.so.2",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7fc5000",to="0x00007ffff7fff000"}]
+[2m2026-04-07T13:50:52.250677Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\nThis GDB supports auto-downloading debuginfo from the following URLs:\n"
+[2m2026-04-07T13:50:52.250724Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <ima:enforcing>\n"
+[2m2026-04-07T13:50:52.250730Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <https://debuginfod.fedoraproject.org/>\n"
+[2m2026-04-07T13:50:52.250735Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"  <ima:ignore>\n"
+[2m2026-04-07T13:50:52.250738Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]\n"
+[2m2026-04-07T13:50:52.250743Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Debuginfod has been disabled.\nTo make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.\n"
+[2m2026-04-07T13:50:52.253001Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:50:52.253006Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:50:52.253011Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.256399Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =library-loaded,id="/lib64/libc.so.6",target-name="/lib64/libc.so.6",host-name="/lib64/libc.so.6",symbols-loaded="0",thread-group="i1",ranges=[{from="0x00007ffff7dad000",to="0x00007ffff7fa0000"}]
+[2m2026-04-07T13:50:52.262515Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"[Thread debugging using libthread_db enabled]\n"
+[2m2026-04-07T13:50:52.262524Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Using host libthread_db library \"/lib64/libthread_db.so.1\".\n"
+[2m2026-04-07T13:50:52.263534Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< =breakpoint-modified,bkpt={number="1",type="breakpoint",disp="keep",enabled="y",addr="0x00000000004004b2",func="main",file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="12",thread-groups=["i1"],times="1",original-location="main"}
+[2m2026-04-07T13:50:52.263594Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"\n"
+[2m2026-04-07T13:50:52.263599Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"Breakpoint 1, main () at ./example.c:12\n"
+[2m2026-04-07T13:50:52.263603Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ~"12\t    printf(\"=== \346\250\231\346\272\226\345\205\245\345\212\233\343\203\206\343\202\271\343\203\210 ===\\n\");\n"
+[2m2026-04-07T13:50:52.263613Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="breakpoint-hit",disp="keep",bkptno="1",frame={addr="0x00000000004004b2",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="12",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:50:52.263624Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:52.280563Z[0m [32m INFO[0m [2mpg_debuger::app[0m[2m:[0m ソースファイル読み込み: /home/solkaze/Projects/pg-debuger/example.c
+[2m2026-04-07T13:50:52.280609Z[0m [32m INFO[0m [2mpg_debuger::app[0m[2m:[0m 読み込み完了: 49 行
+[2m2026-04-07T13:50:52.281083Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="0"},{name="b",type="int",value="0"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:50:52.281114Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:54.818191Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:50:54.818227Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:50:54.818241Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:54.818718Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x00000000004004bc",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="16",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:50:54.818737Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:54.836829Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="0"},{name="b",type="int",value="0"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:50:54.836848Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:55.798514Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:50:55.798539Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:50:55.798547Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:55.799401Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x00000000004004cb",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="17",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:50:55.799425Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:55.817154Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="0"},{name="b",type="int",value="0"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:50:55.817191Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:57.017159Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:50:57.017187Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:50:57.017196Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:59.403808Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x00000000004004e1",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="19",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:50:59.403849Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:50:59.422133Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="3"},{name="b",type="int",value="0"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:50:59.422166Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:01.398192Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:51:01.398222Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:51:01.398230Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:01.399172Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x00000000004004f0",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="20",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:51:01.399194Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:01.416827Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="3"},{name="b",type="int",value="0"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:51:01.416877Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:02.123589Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:51:02.123625Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:51:02.123634Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:04.475654Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x0000000000400506",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="22",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:51:04.475688Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:04.494074Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="3"},{name="b",type="int",value="20"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:51:04.494099Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:07.618544Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^running
+[2m2026-04-07T13:51:07.618611Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *running,thread-id="all"
+[2m2026-04-07T13:51:07.618621Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:07.619704Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< *stopped,reason="end-stepping-range",frame={addr="0x000000000040052e",func="main",args=[],file="./example.c",fullname="/home/solkaze/Projects/pg-debuger/example.c",line="26",arch="i386:x86-64"},thread-id="1",stopped-threads="all",core="22"
+[2m2026-04-07T13:51:07.619741Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 
+[2m2026-04-07T13:51:07.637481Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< ^done,variables=[{name="a",type="int",value="3"},{name="b",type="int",value="20"},{name="name",type="char [64]"},{name="result",type="int",value="32767"},{name="n",type="int",value="32767"}]
+[2m2026-04-07T13:51:07.637524Z[0m [32m INFO[0m [2mpg_debuger::debugger::gdb[0m[2m:[0m gdb< (gdb) 

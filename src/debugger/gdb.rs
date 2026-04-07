@@ -125,19 +125,21 @@ impl GdbBackend {
 
         let event_tx_pty = event_tx.clone();
         std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader as StdBufReader};
-            let reader = StdBufReader::new(master_file);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => {
+            use std::io::Read;
+            let mut master_file = master_file;
+            let mut buf = [0u8; 256];
+            loop {
+                match master_file.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
                         if event_tx_pty
-                            .blocking_send(GdbEvent::ProgramOutput(l))
+                            .blocking_send(GdbEvent::ProgramOutput(chunk))
                             .is_err()
                         {
                             break;
                         }
                     }
-                    Err(_) => break,
                 }
             }
         });
@@ -165,6 +167,8 @@ impl GdbBackend {
             "-interpreter-exec console \"set inferior-tty {}\"",
             self.pts_path.display()
         ))?;
+        // シェル経由でなく直接プログラムを起動することで LD_PRELOAD 等の干渉を防ぐ
+        self.send_command("-interpreter-exec console \"set startup-with-shell off\"")?;
         self.send_command("-break-insert main")?;
         self.send_command("-exec-run")?;
         Ok(())

@@ -68,6 +68,8 @@ pub struct App {
     pub stdin_buffer: String,
     /// 再起動要求フラグ（メインループで検知して await する）
     pub restart_requested: bool,
+    /// プログラムが実行中（GdbEvent::Running 受信後、Stopped 受信前）
+    program_running: bool,
 }
 
 impl App {
@@ -104,6 +106,7 @@ impl App {
             input_buffer: String::new(),
             stdin_buffer: String::new(),
             restart_requested: false,
+            program_running: false,
         })
     }
 
@@ -174,6 +177,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
         self.stdin_buffer.clear();
+        self.program_running = false;
         self.status_message = "再起動しました".to_string();
     }
 
@@ -288,6 +292,7 @@ impl App {
         while let Some(event) = gdb.try_recv_event() {
             match event {
                 GdbEvent::Stopped { file, line } => {
+                    self.program_running = false;
                     self.status_message = format!("{}: {}行目", file.display(), line);
                     self.current_line = Some(line);
                     self.source_cursor = line as usize;
@@ -318,6 +323,7 @@ impl App {
                 }
                 GdbEvent::Running => {
                     self.status_message = "実行中...".to_string();
+                    self.program_running = true;
                 }
                 GdbEvent::VariablesUpdated(vars) => {
                     // 前の変数を保存してから新しい変数で更新する
@@ -330,17 +336,9 @@ impl App {
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
-                    for line in text.split('\n') {
-                        let trimmed = line.trim_end_matches('\r');
-                        if trimmed.is_empty() {
-                            // 連続する空行は1つにまとめる
-                            if self.console_lines.last().map(|l: &String| !l.is_empty()).unwrap_or(false) {
-                                if self.console_lines.len() >= 500 {
-                                    self.console_lines.remove(0);
-                                }
-                                self.console_lines.push(String::new());
-                            }
-                        } else {
+                    for part in text.split('\n') {
+                        let trimmed = part.trim_end_matches('\r');
+                        if !trimmed.is_empty() {
                             if self.console_lines.len() >= 500 {
                                 self.console_lines.remove(0);
                             }
