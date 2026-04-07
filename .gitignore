@@ -1,1 +1,9 @@
 /target
+# デバッグ・テスト用ファイル
+debug.log
+*.zip
+example
+example.c
+src/
+# コンパイル済みバイナリ（拡張子なし）
+/example
