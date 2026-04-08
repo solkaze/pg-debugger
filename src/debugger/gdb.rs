@@ -17,6 +17,8 @@ pub enum GdbEvent {
     Stopped { file: PathBuf, line: u32 },
     /// プログラムが実行中
     Running,
+    /// 変数の型情報を取得した（--no-values の結果）: (name, type_name) のリスト
+    VariableTypesReceived(Vec<(String, String)>),
     /// 変数一覧が更新された
     VariablesUpdated(Vec<Variable>),
     /// ブレークポイントが設定された
@@ -211,9 +213,13 @@ impl GdbBackend {
     }
 
     /// 現在のスタックフレームの変数一覧を要求する
+    /// 2 段階で取得する:
+    ///   トークン 1: --no-values  → name + type を取得
+    ///   トークン 2: --all-values → name + value を取得（配列含む）
+    /// App 側でマージして VariablesUpdated を生成する。
     pub fn request_variables(&self) -> Result<()> {
-        // --simple-values は name・type・value を単純型に対して出力する
-        self.send_command("-stack-list-variables --simple-values")
+        self.send_command("1-stack-list-variables --no-values")?;
+        self.send_command("2-stack-list-variables --all-values")
     }
 
     /// inferior の stdin にテキストを送信する（PTY マスターに書き込む）
@@ -263,7 +269,16 @@ fn parse_gdb_line(line: &str) -> Option<GdbEvent> {
         extract_value(line, "id")
             .and_then(|s| s.parse::<u32>().ok())
             .map(GdbEvent::BreakpointDeleted)
-    } else if line.starts_with("^done,variables=") {
+    } else if line.starts_with("1^done,variables=") {
+        // --no-values レスポンス: name と type のみ
+        let types = parse_variables_response(line)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| (v.name, v.type_name))
+            .collect();
+        Some(GdbEvent::VariableTypesReceived(types))
+    } else if line.starts_with("2^done,variables=") {
+        // --all-values レスポンス: name と value のみ（型は別途マージ）
         let vars = parse_variables_response(line).unwrap_or_default();
         Some(GdbEvent::VariablesUpdated(vars))
     } else if line.starts_with('@') {
@@ -338,10 +353,9 @@ fn parse_variables_response(line: &str) -> Option<Vec<Variable>> {
         // ブロック内から name / type / value を抽出
         let name = extract_quoted_value(block, "name").unwrap_or_default();
         let type_name = extract_quoted_value(block, "type").unwrap_or_default();
-        let value = extract_quoted_value(block, "value").unwrap_or_default();
+        let value = extract_quoted_value(block, "value").unwrap_or("...".to_string());
 
-        // value フィールドが存在しない（未初期化）変数は除外する
-        if !name.is_empty() && !value.is_empty() {
+        if !name.is_empty() {
             vars.push(Variable { name, value, type_name });
         }
     }

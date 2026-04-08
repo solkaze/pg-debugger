@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::compiler;
@@ -48,8 +49,12 @@ pub struct App {
     pub variables: Vec<Variable>,
     /// 1 ステップ前の変数一覧（変更検知用）
     pub prev_variables: Vec<Variable>,
-    /// 変数ビューのスクロールオフセット
+    /// 変数ビューのスクロールオフセット（表示行ベース）
     pub var_scroll: usize,
+    /// 変数ビューのカーソル行（表示行ベース、0-origin）
+    pub var_cursor: usize,
+    /// 折りたたまれている配列変数名のセット
+    pub collapsed_vars: HashSet<String>,
     /// コンソール出力行（最大 500 行）
     pub console_lines: Vec<String>,
     /// 設定済みブレークポイント一覧
@@ -70,6 +75,8 @@ pub struct App {
     pub restart_requested: bool,
     /// プログラムが実行中（GdbEvent::Running 受信後、Stopped 受信前）
     program_running: bool,
+    /// --no-values で取得した (name, type_name) のリスト（--all-values とマージするまで保持）
+    pending_var_types: Vec<(String, String)>,
 }
 
 impl App {
@@ -97,6 +104,8 @@ impl App {
             variables: Vec::new(),
             prev_variables: Vec::new(),
             var_scroll: 0,
+            var_cursor: 0,
+            collapsed_vars: HashSet::new(),
             console_lines: Vec::new(),
             breakpoints: Vec::new(),
             source_cursor: 1,
@@ -107,6 +116,7 @@ impl App {
             stdin_buffer: String::new(),
             restart_requested: false,
             program_running: false,
+            pending_var_types: Vec::new(),
         })
     }
 
@@ -174,10 +184,14 @@ impl App {
         self.source_cursor = 1;
         self.source_scroll = 0;
         self.console_scroll = None;
+        self.var_scroll = 0;
+        self.var_cursor = 0;
+        self.collapsed_vars.clear();
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
         self.stdin_buffer.clear();
         self.program_running = false;
+        self.pending_var_types.clear();
         self.status_message = "再起動しました".to_string();
     }
 
@@ -275,6 +289,11 @@ impl App {
                     self.restart_requested = true;
                 }
                 KeyCode::Char('c') | KeyCode::F(5) => self.send_continue(),
+                KeyCode::Enter => {
+                    if self.focused_panel == Panel::Vars {
+                        self.toggle_var_collapse();
+                    }
+                }
                 KeyCode::Up => self.scroll_up(),
                 KeyCode::Down => self.scroll_down(),
                 KeyCode::PageUp => self.page_up(),
@@ -325,14 +344,44 @@ impl App {
                     self.status_message = "実行中...".to_string();
                     self.program_running = true;
                 }
-                GdbEvent::VariablesUpdated(vars) => {
+                GdbEvent::VariableTypesReceived(types) => {
+                    self.pending_var_types = types;
+                }
+                GdbEvent::VariablesUpdated(mut vars) => {
+                    // --no-values で取得した型情報をマージする
+                    for var in &mut vars {
+                        if let Some((_, type_name)) = self
+                            .pending_var_types
+                            .iter()
+                            .find(|(n, _)| n == &var.name)
+                        {
+                            var.type_name = type_name.clone();
+                        }
+                    }
+                    self.pending_var_types.clear();
                     // 前の変数を保存してから新しい変数で更新する
                     self.prev_variables = std::mem::take(&mut self.variables);
                     self.variables = vars;
-                    // スクロール位置が範囲外になった場合はクランプする
-                    let max_scroll = self.variables.len().saturating_sub(1);
-                    if self.var_scroll > max_scroll {
-                        self.var_scroll = max_scroll;
+                    // gdb の可変借用中は self メソッドを呼べないためインライン計算する
+                    let collapsed = &self.collapsed_vars;
+                    let total: usize = self.variables.iter().map(|var| {
+                        if var.type_name.contains('[')
+                            && var.value.trim().starts_with('{')
+                            && !collapsed.contains(&var.name)
+                        {
+                            let t = var.value.trim();
+                            let inner = &t[1..t.len() - 1];
+                            1 + if inner.trim().is_empty() { 0 } else { inner.split(',').count() }
+                        } else {
+                            1
+                        }
+                    }).sum();
+                    let max_pos = total.saturating_sub(1);
+                    if self.var_cursor > max_pos {
+                        self.var_cursor = max_pos;
+                    }
+                    if self.var_scroll > max_pos {
+                        self.var_scroll = max_pos;
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
@@ -452,7 +501,12 @@ impl App {
                 }
             }
             Panel::Vars => {
-                self.var_scroll = self.var_scroll.saturating_sub(1);
+                if self.var_cursor > 0 {
+                    self.var_cursor -= 1;
+                }
+                if self.var_cursor < self.var_scroll {
+                    self.var_scroll = self.var_cursor;
+                }
             }
             Panel::Console => {
                 let view_height = 20usize;
@@ -484,9 +538,13 @@ impl App {
                 }
             }
             Panel::Vars => {
-                let max_scroll = self.variables.len().saturating_sub(1);
-                if self.var_scroll < max_scroll {
-                    self.var_scroll += 1;
+                let total = self.var_render_rows();
+                if self.var_cursor + 1 < total {
+                    self.var_cursor += 1;
+                }
+                let view_height = 20usize;
+                if self.var_cursor >= self.var_scroll + view_height {
+                    self.var_scroll = self.var_cursor + 1 - view_height;
                 }
             }
             Panel::Console => {
@@ -533,5 +591,84 @@ impl App {
                 self.console_scroll = Some(n + view_height);
             }
         }
+    }
+
+    /// カーソル位置の配列をトグル（展開/折りたたみ）する
+    fn toggle_var_collapse(&mut self) {
+        let cursor_info = self.var_cursor_var_index();
+        // デバッグ: Enter を押したときカーソル状態をステータスバーに表示する
+        self.status_message = format!(
+            "cursor={}, var_cursor_var_index={:?}",
+            self.var_cursor, cursor_info
+        );
+        if let Some((var_idx, true)) = cursor_info {
+            let var = &self.variables[var_idx];
+            if var.type_name.contains('[') && var.value.trim().starts_with('{') {
+                let name = var.name.clone();
+                if self.collapsed_vars.contains(&name) {
+                    self.collapsed_vars.remove(&name);
+                } else {
+                    self.collapsed_vars.insert(name);
+                }
+            }
+        }
+    }
+
+    /// カーソル行がどの変数のどの行かを返す（var_index, is_header）
+    pub fn var_cursor_var_index(&self) -> Option<(usize, bool)> {
+        let mut row = 0usize;
+        for (i, var) in self.variables.iter().enumerate() {
+            if row == self.var_cursor {
+                return Some((i, true));
+            }
+            row += 1;
+            if var.type_name.contains('[')
+                && var.value.trim().starts_with('{')
+                && !self.collapsed_vars.contains(&var.name)
+            {
+                let count = count_array_elements(&var.value);
+                if self.var_cursor < row + count {
+                    return Some((i, false));
+                }
+                row += count;
+            }
+        }
+        None
+    }
+
+    /// 変数ビューの総表示行数を返す
+    pub fn var_render_rows(&self) -> usize {
+        let mut count = 0;
+        for var in &self.variables {
+            count += 1;
+            if var.type_name.contains('[')
+                && var.value.trim().starts_with('{')
+                && !self.collapsed_vars.contains(&var.name)
+            {
+                count += count_array_elements(&var.value);
+            }
+        }
+        count
+    }
+
+    /// カーソル位置の変数の完全な値を返す（ステータスバー表示用）
+    pub fn var_cursor_full_value(&self) -> Option<String> {
+        let (var_idx, _) = self.var_cursor_var_index()?;
+        Some(self.variables[var_idx].value.clone())
+    }
+}
+
+/// GDB の "{v1, v2, ...}" 形式から要素数を返す
+fn count_array_elements(value: &str) -> usize {
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.trim().is_empty() {
+            0
+        } else {
+            inner.split(',').count()
+        }
+    } else {
+        0
     }
 }

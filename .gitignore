@@ -4,6 +4,7 @@ debug.log
 *.zip
 example
 example.c
+test.c
 src/
 # コンパイル済みバイナリ（拡張子なし）
 /example

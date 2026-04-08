@@ -11,17 +11,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add Linux target
-        run: rustup target add x86_64-unknown-linux-gnu
+      - name: Add Linux musl target
+        run: rustup target add x86_64-unknown-linux-musl
 
-      - name: Install gcc
-        run: sudo apt-get install -y gcc
+      - name: Install musl-tools and gcc
+        run: sudo apt-get install -y musl-tools gcc
 
       - name: Build (Linux)
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+        run: cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Rename binary
-        run: mv target/x86_64-unknown-linux-gnu/release/pg-debuger pg-debugger-linux-x86_64
+        run: mv target/x86_64-unknown-linux-musl/release/pg-debuger pg-debugger-linux-x86_64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

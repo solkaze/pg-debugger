@@ -9,6 +9,59 @@ use ratatui::{
 
 use crate::app::{App, Panel};
 
+/// "{v1, v2, v3, ...}" → Vec<String>
+fn parse_array_elements(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.trim().is_empty() {
+            vec![]
+        } else {
+            inner.split(',').map(|s| s.trim().to_string()).collect()
+        }
+    } else {
+        vec![]
+    }
+}
+
+/// char配列の数値リスト "{72, 101, ...}" をASCII文字列 "Hello" に変換する
+fn char_array_to_string(value: &str) -> String {
+    let trimmed = value.trim();
+    // 既に文字列形式 "..." の場合はそのまま返す
+    if trimmed.starts_with('"') {
+        return trimmed.to_string();
+    }
+    let elements = parse_array_elements(value);
+    let mut result = String::new();
+    for elem in &elements {
+        match elem.trim().parse::<u32>() {
+            Ok(0) => break, // ヌル終端
+            Ok(n) if (32..=126).contains(&n) => {
+                result.push(char::from_u32(n).unwrap_or('?'));
+            }
+            Ok(n) => result.push_str(&format!("\\x{:02x}", n)),
+            Err(_) => {}
+        }
+    }
+    format!("\"{}\"", result)
+}
+
+/// 値が30文字を超える場合は末尾を ... で切り詰める
+fn truncate_value(value: &str) -> String {
+    const MAX_LEN: usize = 30;
+    if value.chars().count() > MAX_LEN {
+        let truncated: String = value.chars().take(MAX_LEN).collect();
+        format!("{}...", truncated)
+    } else {
+        value.to_string()
+    }
+}
+
+/// 展開可能な配列かどうか（type に "[" が含まれ、値が "{" で始まる）
+fn is_expandable_array(type_name: &str, value: &str) -> bool {
+    type_name.contains('[') && value.trim().starts_with('{')
+}
+
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Vars;
     let border_style = if focused {
@@ -45,23 +98,12 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     // ボーダー 2 行 + ヘッダー 1 行を除いた表示可能行数
     let visible = area.height.saturating_sub(3) as usize;
 
-    let rows: Vec<Row> = app
-        .variables
-        .iter()
+    // 全レンダリング行を構築してからスクロールオフセット分スキップして表示する
+    let all_rows = build_rows(app, &changed, focused);
+    let rows: Vec<Row> = all_rows
+        .into_iter()
         .skip(app.var_scroll)
         .take(visible)
-        .map(|var| {
-            let style = if changed.contains(var.name.as_str()) {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default()
-            };
-            Row::new([
-                Cell::from(var.name.clone()).style(style),
-                Cell::from(var.type_name.clone()).style(style),
-                Cell::from(var.value.clone()).style(style),
-            ])
-        })
         .collect();
 
     let widths = [
@@ -82,4 +124,115 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let table = Table::new(rows, widths).header(header).block(block);
     f.render_widget(table, area);
+}
+
+/// 全変数から表示行（Row）一覧を構築する
+fn build_rows<'a>(
+    app: &'a App,
+    changed: &HashSet<&str>,
+    focused: bool,
+) -> Vec<Row<'static>> {
+    let mut rows: Vec<Row<'static>> = Vec::new();
+    let mut render_row_idx = 0usize;
+
+    for var in &app.variables {
+        let is_changed = changed.contains(var.name.as_str());
+        let base_fg = if is_changed { Color::Green } else { Color::Reset };
+
+        let expandable = is_expandable_array(&var.type_name, &var.value);
+        let collapsed = app.collapsed_vars.contains(&var.name);
+
+        // ヘッダー行
+        let is_cursor = focused && render_row_idx == app.var_cursor;
+        let header_style = make_style(base_fg, is_cursor);
+
+        if expandable {
+            let indicator = if collapsed { "▶" } else { "▼" };
+            let name_cell = format!("{} {}", indicator, var.name);
+
+            let value_cell = if collapsed {
+                // 折りたたみ時: char配列ならASCII、それ以外は末尾省略
+                if var.type_name.starts_with("char [") {
+                    char_array_to_string(&var.value)
+                } else {
+                    truncate_value(&var.value)
+                }
+            } else {
+                String::new()
+            };
+
+            rows.push(Row::new([
+                Cell::from(name_cell).style(header_style),
+                Cell::from(var.type_name.clone()).style(header_style),
+                Cell::from(value_cell).style(header_style),
+            ]));
+            render_row_idx += 1;
+
+            // 展開時: 要素を1行ずつ表示
+            if !collapsed {
+                let elements = parse_array_elements(&var.value);
+                let is_char = var.type_name.starts_with("char [");
+
+                for (i, elem) in elements.iter().enumerate() {
+                    let elem_cursor = focused && render_row_idx == app.var_cursor;
+                    let elem_style = make_style(base_fg, elem_cursor);
+
+                    let display_value = if is_char {
+                        format_char_element(elem)
+                    } else {
+                        elem.clone()
+                    };
+
+                    rows.push(Row::new([
+                        Cell::from(format!("  [{i}]")).style(elem_style),
+                        Cell::from("").style(elem_style),
+                        Cell::from(display_value).style(elem_style),
+                    ]));
+                    render_row_idx += 1;
+                }
+            }
+        } else {
+            // 通常変数（または "{" で始まらない型）
+            let display_value = if var.type_name.starts_with("char [") {
+                char_array_to_string(&var.value)
+            } else {
+                truncate_value(&var.value)
+            };
+
+            rows.push(Row::new([
+                Cell::from(var.name.clone()).style(header_style),
+                Cell::from(var.type_name.clone()).style(header_style),
+                Cell::from(display_value).style(header_style),
+            ]));
+            render_row_idx += 1;
+        }
+    }
+
+    rows
+}
+
+/// char配列の1要素を "'H' (72)" 形式で返す
+fn format_char_element(elem: &str) -> String {
+    match elem.trim().parse::<u32>() {
+        Ok(0) => "'\\0' (0)".to_string(),
+        Ok(n) if (32..=126).contains(&n) => {
+            let c = char::from_u32(n).unwrap_or('?');
+            format!("'{}' ({})", c, n)
+        }
+        Ok(n) => format!("'\\x{:02x}' ({})", n, n),
+        Err(_) => elem.to_string(),
+    }
+}
+
+/// 行スタイルを生成する（変更色 + カーソルハイライト）
+fn make_style(fg: Color, is_cursor: bool) -> Style {
+    let mut style = if fg == Color::Reset {
+        Style::default()
+    } else {
+        Style::default().fg(fg)
+    };
+    if is_cursor {
+        style = style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+    }
+    style
 }

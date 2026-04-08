@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, Panel};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
@@ -13,8 +13,21 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
-    // 上段: 現在の停止位置（GDB からのイベントで更新される）
-    let location_text = if !app.status_message.is_empty() {
+    // 上段: 現在の停止位置（変数ビューフォーカス時はカーソル行の完全な値も表示）
+    let location_text = if app.focused_panel == Panel::Vars {
+        if let Some(full_val) = app.var_cursor_full_value() {
+            let base = if !app.status_message.is_empty() {
+                app.status_message.clone()
+            } else {
+                "GDB 未起動".to_string()
+            };
+            format!("{}  |  値: {}", base, full_val)
+        } else if !app.status_message.is_empty() {
+            app.status_message.clone()
+        } else {
+            "GDB 未起動".to_string()
+        }
+    } else if !app.status_message.is_empty() {
         app.status_message.clone()
     } else {
         "GDB 未起動".to_string()
