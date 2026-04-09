@@ -10,6 +10,7 @@ use std::io;
 mod app;
 mod compiler;
 mod debugger;
+mod gdb_utils;
 mod ui;
 
 use app::App;

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use unicode_width::UnicodeWidthChar;
+
 use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
@@ -8,6 +10,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Panel};
+use crate::gdb_utils::decode_gdb_octal_string;
 
 /// "{v1, v2, v3, ...}" → Vec<String>
 fn parse_array_elements(value: &str) -> Vec<String> {
@@ -24,27 +27,6 @@ fn parse_array_elements(value: &str) -> Vec<String> {
     }
 }
 
-/// char配列の数値リスト "{72, 101, ...}" をASCII文字列 "Hello" に変換する
-fn char_array_to_string(value: &str) -> String {
-    let trimmed = value.trim();
-    // 既に文字列形式 "..." の場合はそのまま返す
-    if trimmed.starts_with('"') {
-        return trimmed.to_string();
-    }
-    let elements = parse_array_elements(value);
-    let mut result = String::new();
-    for elem in &elements {
-        match elem.trim().parse::<u32>() {
-            Ok(0) => break, // ヌル終端
-            Ok(n) if (32..=126).contains(&n) => {
-                result.push(char::from_u32(n).unwrap_or('?'));
-            }
-            Ok(n) => result.push_str(&format!("\\x{:02x}", n)),
-            Err(_) => {}
-        }
-    }
-    format!("\"{}\"", result)
-}
 
 /// double/float の値を小数点以下6桁に丸め、末尾の余分な0を除去する
 fn format_float_value(value: &str) -> String {
@@ -72,9 +54,78 @@ fn truncate_value(value: &str) -> String {
     }
 }
 
+/// char* / const char* の値からアドレス・シンボル名を除去してデコードした文字列を返す。
+/// パターンA: "0x401234 \"せかい\""
+/// パターンB: "0x401234 \"\\343\\201\\233\""  (オクタルエスケープ)
+/// パターンC: "0x401234 <symbol_name> \"...\""  (シンボル名あり)
+fn format_char_ptr_value(value: &str) -> String {
+    tracing::debug!("format_char_ptr_value input={:?}", value);
+    let trimmed = value.trim();
+    if !trimmed.starts_with("0x") {
+        tracing::debug!("format_char_ptr_value: not an address, returning as-is");
+        return trimmed.to_string();
+    }
+
+    // アドレス部分を除去
+    let rest = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim();
+
+    // シンボル名 <...> を除去（ネストしたものも考慮して繰り返す）
+    let mut rest = rest;
+    while rest.starts_with('<') {
+        if let Some(end) = rest.find('>') {
+            rest = rest[end + 1..].trim();
+        } else {
+            break;
+        }
+    }
+
+    tracing::debug!("format_char_ptr_value: after stripping address/symbol: {:?}", rest);
+
+    if rest.is_empty() {
+        tracing::debug!("format_char_ptr_value: no string content, returning address");
+        return trimmed.to_string();
+    }
+    let result = decode_gdb_octal_string(rest);
+    tracing::debug!("format_char_ptr_value output={:?}", result);
+    result
+}
+
+/// 表示幅オフセットを考慮して文字列をスキップする
+fn skip_display_width(s: &str, skip_width: usize) -> &str {
+    let mut current_width = 0;
+    for (i, c) in s.char_indices() {
+        if current_width >= skip_width {
+            return &s[i..];
+        }
+        current_width += c.width().unwrap_or(0);
+    }
+    ""
+}
+
 /// 展開可能な配列かどうか（type に "[" が含まれ、値が "{" で始まる）
 fn is_expandable_array(type_name: &str, value: &str) -> bool {
     type_name.contains('[') && value.trim().starts_with('{')
+}
+
+/// char配列の {N, N, N, ...} 数値リスト形式をUTF-8文字列に変換する。
+/// 0バイトで終端し、結果を "\"...\"" 形式で返す。
+fn decode_numeric_char_array(value: &str) -> String {
+    let elements = parse_array_elements(value);
+    let bytes: Vec<u8> = elements
+        .iter()
+        .filter_map(|e| e.trim().parse::<u8>().ok())
+        .take_while(|&b| b != 0)
+        .collect();
+    match String::from_utf8(bytes.clone()) {
+        Ok(s) => format!("\"{}\"", s),
+        Err(_) => {
+            let ascii: String = bytes
+                .iter()
+                .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
+                .collect();
+            format!("\"{}\"", ascii)
+        }
+    }
 }
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
@@ -130,10 +181,15 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let header_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
+    let value_header = if app.var_col_scroll > 0 {
+        "値 ◀"
+    } else {
+        "値"
+    };
     let header = Row::new([
         Cell::from("名前").style(header_style),
         Cell::from("型").style(header_style),
-        Cell::from("値").style(header_style),
+        Cell::from(value_header).style(header_style),
     ])
     .height(1);
 
@@ -155,6 +211,10 @@ fn build_rows<'a>(
         let base_fg = if is_changed { Color::Green } else { Color::Reset };
 
         let expandable = is_expandable_array(&var.type_name, &var.value);
+        tracing::debug!(
+            "var={} type={} value={:?} expandable={}",
+            var.name, var.type_name, var.value, expandable
+        );
         let collapsed = app.collapsed_vars.contains(&var.name);
 
         // ヘッダー行
@@ -166,12 +226,19 @@ fn build_rows<'a>(
             let name_cell = format!("{} {}", indicator, var.name);
 
             let value_cell = if collapsed {
-                // 折りたたみ時: char配列ならASCII、それ以外は末尾省略
-                if var.type_name.starts_with("char [") {
-                    char_array_to_string(&var.value)
+                // 折りたたみ時: char配列なら文字列表示、それ以外は末尾省略
+                let raw = if var.type_name.starts_with("char [") {
+                    if var.value.trim().starts_with('{') {
+                        // {N, N, N, ...} 数値リスト形式 → UTF-8文字列に変換
+                        decode_numeric_char_array(&var.value)
+                    } else {
+                        // "\343\201\223..." 8進数エスケープ形式 → デコード
+                        decode_gdb_octal_string(&var.value)
+                    }
                 } else {
                     truncate_value(&var.value)
-                }
+                };
+                skip_display_width(&raw, app.var_col_scroll).to_owned()
             } else {
                 String::new()
             };
@@ -193,13 +260,14 @@ fn build_rows<'a>(
                     let elem_cursor = focused && render_row_idx == app.var_cursor;
                     let elem_style = make_style(base_fg, elem_cursor);
 
-                    let display_value = if is_char {
+                    let raw_value = if is_char {
                         format_char_element(elem)
                     } else if is_float {
                         format_float_value(elem)
                     } else {
                         elem.clone()
                     };
+                    let display_value = skip_display_width(&raw_value, app.var_col_scroll).to_owned();
 
                     rows.push(Row::new([
                         Cell::from(format!("  [{i}]")).style(elem_style),
@@ -211,13 +279,19 @@ fn build_rows<'a>(
             }
         } else {
             // 通常変数（または "{" で始まらない型）
-            let display_value = if var.type_name.starts_with("char [") {
-                char_array_to_string(&var.value)
+            let raw_value = if var.type_name.contains("char *") {
+                format_char_ptr_value(&var.value)
+            } else if var.type_name.starts_with("char [") {
+                // ArrayValue で raw 値が保持されているのでここで一度だけデコードする
+                let decoded = decode_gdb_octal_string(&var.value);
+                tracing::debug!("char[] decode: input={:?} output={:?}", var.value, decoded);
+                decoded
             } else if var.type_name == "double" || var.type_name == "float" {
                 format_float_value(&var.value)
             } else {
                 truncate_value(&var.value)
             };
+            let display_value = skip_display_width(&raw_value, app.var_col_scroll).to_owned();
 
             rows.push(Row::new([
                 Cell::from(var.name.clone()).style(header_style),

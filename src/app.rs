@@ -53,6 +53,8 @@ pub struct App {
     pub var_scroll: usize,
     /// 変数ビューのカーソル行（表示行ベース、0-origin）
     pub var_cursor: usize,
+    /// 変数ビューの値カラム横スクロールオフセット（文字数）
+    pub var_col_scroll: usize,
     /// 折りたたまれている配列変数名のセット
     pub collapsed_vars: HashSet<String>,
     /// コンソール出力行（最大 500 行）
@@ -103,6 +105,7 @@ impl App {
             prev_variables: Vec::new(),
             var_scroll: 0,
             var_cursor: 0,
+            var_col_scroll: 0,
             collapsed_vars: HashSet::new(),
             console_lines: Vec::new(),
             breakpoints: Vec::new(),
@@ -183,6 +186,7 @@ impl App {
         self.console_scroll = None;
         self.var_scroll = 0;
         self.var_cursor = 0;
+        self.var_col_scroll = 0;
         self.collapsed_vars.clear();
         self.input_mode = InputMode::Normal;
         self.input_buffer.clear();
@@ -292,6 +296,16 @@ impl App {
                 }
                 KeyCode::Up => self.scroll_up(),
                 KeyCode::Down => self.scroll_down(),
+                KeyCode::Left => {
+                    if self.focused_panel == Panel::Vars {
+                        self.var_col_scroll = self.var_col_scroll.saturating_sub(2);
+                    }
+                }
+                KeyCode::Right => {
+                    if self.focused_panel == Panel::Vars {
+                        self.var_col_scroll += 2;
+                    }
+                }
                 KeyCode::PageUp => self.page_up(),
                 KeyCode::PageDown => self.page_down(),
                 _ => {}
@@ -342,10 +356,11 @@ impl App {
                 }
                 GdbEvent::VariablesUpdated(vars) => {
                     tracing::info!("simple-values受信: {:?}", vars);
-                    // 配列型変数の name を収集してから self.variables を更新する
-                    let array_names: Vec<String> = vars
+                    // 配列型変数・char*型変数の name を収集してから self.variables を更新する
+                    // char* は simple-values の値が不正確な場合があるため -data-evaluate-expression で再取得する
+                    let eval_names: Vec<String> = vars
                         .iter()
-                        .filter(|v| v.type_name.contains('['))
+                        .filter(|v| v.type_name.contains('[') || v.type_name.contains("char *"))
                         .map(|v| v.name.clone())
                         .collect();
 
@@ -363,16 +378,21 @@ impl App {
                         self.var_scroll = max_pos;
                     }
 
-                    // 配列型変数の値を個別に取得する
-                    for name in &array_names {
+                    // 配列型・char*型変数の値を -data-evaluate-expression で個別に取得する
+                    for name in &eval_names {
                         if let Err(e) = gdb.request_array_value(name) {
-                            tracing::error!("配列値要求エラー: {}", e);
+                            tracing::error!("評価値要求エラー: {}", e);
                         }
                     }
                 }
                 GdbEvent::ArrayValue { name, value } => {
                     tracing::info!("配列値受信: {} = {}", name, value);
                     if let Some(var) = self.variables.iter_mut().find(|v| v.name == name) {
+                        tracing::debug!(
+                            "ArrayValue更新: name={} type={} old={:?} new={:?}",
+                            name, var.type_name, var.value, value
+                        );
+                        // raw値をそのまま保持する。デコードは var_view.rs で一度だけ行う。
                         var.value = value;
                     }
                 }

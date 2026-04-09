@@ -325,27 +325,152 @@ fn parse_array_value_response(
         map.remove(&token)?
     };
 
-    // `^done,value="..."` の value を抽出する
-    let value_prefix = "^done,value=\"";
-    let value_start = line[caret..].find(value_prefix)? + value_prefix.len() + caret;
-    let rest = &line[value_start..];
-
-    let mut value = String::new();
-    let mut chars = rest.chars();
-    loop {
-        match chars.next()? {
-            '\\' => {
-                if let Some(c) = chars.next() {
-                    value.push(c);
-                }
-            }
-            '"' => break,
-            c => value.push(c),
-        }
-    }
+    // `^done,value="..."` の value をバックスラッシュ保持でraw取り出しする
+    let value = extract_raw_array_value(line, caret)?;
 
     tracing::info!("配列値応答: {} = {}", var_name, value);
     Some(GdbEvent::ArrayValue { name: var_name, value })
+}
+
+/// GDB MI の `N^done,value="..."` から value をバックスラッシュを保持したまま取り出す。
+/// 閉じクォートの後に続く `, '\NNN' <repeats N times>` 形式の繰り返し表記も展開する。
+fn extract_raw_array_value(line: &str, caret: usize) -> Option<String> {
+    let value_prefix = "^done,value=\"";
+    let after_caret = &line[caret..];
+    let inner_start = after_caret.find(value_prefix)? + value_prefix.len();
+    let rest = &after_caret[inner_start..];
+
+    let mut result = String::new();
+    let mut char_iter = rest.char_indices();
+    let mut close_idx = rest.len();
+
+    // メインのクォート文字列をバックスラッシュ保持でそのまま取り出す
+    loop {
+        match char_iter.next() {
+            None => break,
+            Some((i, '"')) => {
+                close_idx = i + 1;
+                break;
+            }
+            Some((_, '\\')) => {
+                // バックスラッシュと次の文字を両方保持する（8進数エスケープを保つため）
+                result.push('\\');
+                if let Some((_, c)) = char_iter.next() {
+                    result.push(c);
+                }
+            }
+            Some((_, c)) => result.push(c),
+        }
+    }
+
+    // 閉じクォートの後に続く繰り返し表記を展開する
+    // 例: `, '\000' <repeats 5 times>`
+    append_gdb_repeat_notations(&mut result, &rest[close_idx..]);
+
+    Some(result)
+}
+
+/// GDB の繰り返し表記 `, '\NNN' <repeats N times>` を解析して result に展開追記する。
+/// 8進数エスケープはバックスラッシュを保持したまま追加し、decode_gdb_octal_string で後処理する。
+fn append_gdb_repeat_notations(result: &mut String, s: &str) {
+    let mut pos = 0;
+    let bytes = s.as_bytes();
+
+    loop {
+        // 空白をスキップ
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // `,` を期待
+        if pos >= bytes.len() || bytes[pos] != b',' {
+            break;
+        }
+        pos += 1;
+
+        // 空白をスキップ
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // `'` を期待
+        if pos >= bytes.len() || bytes[pos] != b'\'' {
+            break;
+        }
+        pos += 1;
+
+        // エスケープパターンを raw 取り出し（例: \000 → "\\000"）
+        let mut pattern = String::new();
+        if pos < bytes.len() && bytes[pos] == b'\\' {
+            pattern.push('\\');
+            pos += 1;
+            // 8進数の場合は最大3桁取得
+            let mut digit_count = 0;
+            while pos < bytes.len() && digit_count < 3 && bytes[pos] >= b'0' && bytes[pos] <= b'7'
+            {
+                pattern.push(bytes[pos] as char);
+                pos += 1;
+                digit_count += 1;
+            }
+            // 8進数以外のエスケープ（\n 等）は1文字取得
+            if digit_count == 0 && pos < bytes.len() {
+                pattern.push(bytes[pos] as char);
+                pos += 1;
+            }
+        } else if pos < bytes.len() && bytes[pos] != b'\'' {
+            pattern.push(bytes[pos] as char);
+            pos += 1;
+        }
+
+        // 閉じ `'` を期待
+        if pos >= bytes.len() || bytes[pos] != b'\'' {
+            break;
+        }
+        pos += 1;
+
+        // 空白をスキップ
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // `<repeats ` を期待
+        let repeats_prefix = b"<repeats ";
+        if pos + repeats_prefix.len() > bytes.len()
+            || &bytes[pos..pos + repeats_prefix.len()] != repeats_prefix
+        {
+            break;
+        }
+        pos += repeats_prefix.len();
+
+        // 繰り返し回数を取得
+        let count_start = pos;
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        let count: usize = match s[count_start..pos].parse() {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        // 空白をスキップ
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // `times>` を期待
+        let times_suffix = b"times>";
+        if pos + times_suffix.len() > bytes.len()
+            || &bytes[pos..pos + times_suffix.len()] != times_suffix
+        {
+            break;
+        }
+        pos += times_suffix.len();
+
+        // パターンを count 回追加
+        for _ in 0..count {
+            result.push_str(&pattern);
+        }
+    }
 }
 
 /// `^done,bkpt={number="1",...,fullname="...",...,line="4",...}` をパースして Breakpoint を返す
