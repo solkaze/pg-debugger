@@ -1,8 +1,9 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -17,10 +18,10 @@ pub enum GdbEvent {
     Stopped { file: PathBuf, line: u32 },
     /// プログラムが実行中
     Running,
-    /// 変数の型情報を取得した（--no-values の結果）: (name, type_name) のリスト
-    VariableTypesReceived(Vec<(String, String)>),
-    /// 変数一覧が更新された
+    /// 変数一覧が更新された（--simple-values の結果）
     VariablesUpdated(Vec<Variable>),
+    /// 配列変数の値が取得できた（-data-evaluate-expression の結果）
+    ArrayValue { name: String, value: String },
     /// ブレークポイントが設定された
     BreakpointSet(Breakpoint),
     /// ブレークポイントが削除された
@@ -44,6 +45,11 @@ pub struct GdbBackend {
     _slave_fd: OwnedFd,
     /// PTY マスターへの書き込みハンドル（inferior の stdin に送信する）
     pty_master_write: Mutex<std::fs::File>,
+    /// -data-evaluate-expression のトークン番号 → 変数名 のマッピング
+    /// リーダータスクと共有するため Arc<Mutex<...>>
+    pending_evals: Arc<Mutex<HashMap<u64, String>>>,
+    /// 次に使うトークン番号（2 以上。1 は stack-list-variables 用）
+    next_token: Mutex<u64>,
 }
 
 impl GdbBackend {
@@ -70,6 +76,10 @@ impl GdbBackend {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
         let (event_tx, event_rx) = mpsc::channel::<GdbEvent>(32);
 
+        let pending_evals: Arc<Mutex<HashMap<u64, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_evals_reader = Arc::clone(&pending_evals);
+
         // GDB stdout を非同期で読み続けるタスク
         let event_tx_reader = event_tx.clone();
         tokio::spawn(async move {
@@ -79,7 +89,7 @@ impl GdbBackend {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         tracing::info!("gdb< {}", line);
-                        if let Some(event) = parse_gdb_line(&line) {
+                        if let Some(event) = parse_gdb_line(&line, &pending_evals_reader) {
                             if event_tx_reader.send(event).await.is_err() {
                                 break;
                             }
@@ -153,6 +163,8 @@ impl GdbBackend {
             pts_path,
             _slave_fd: pty.slave,
             pty_master_write: Mutex::new(pty_master_write),
+            pending_evals,
+            next_token: Mutex::new(2),
         })
     }
 
@@ -212,14 +224,27 @@ impl GdbBackend {
         self.send_command("-exec-continue")
     }
 
-    /// 現在のスタックフレームの変数一覧を要求する
-    /// 2 段階で取得する:
-    ///   トークン 1: --no-values  → name + type を取得
-    ///   トークン 2: --all-values → name + value を取得（配列含む）
-    /// App 側でマージして VariablesUpdated を生成する。
+    /// 現在のスタックフレームの変数一覧を要求する（--simple-values）
+    /// name + type + 単純型の value が得られる。配列型は value が省略される。
     pub fn request_variables(&self) -> Result<()> {
-        self.send_command("1-stack-list-variables --no-values")?;
-        self.send_command("2-stack-list-variables --all-values")
+        self.send_command("1-stack-list-variables --simple-values")
+    }
+
+    /// 配列型変数の値を -data-evaluate-expression で個別取得する
+    pub fn request_array_value(&self, var_name: &str) -> Result<()> {
+        let token = {
+            let mut t = self.next_token.lock().unwrap();
+            *t += 1;
+            *t
+        };
+        {
+            let mut map = self.pending_evals.lock().unwrap();
+            map.insert(token, var_name.to_string());
+        }
+        self.send_command(&format!(
+            "{}-data-evaluate-expression \"{}\"",
+            token, var_name
+        ))
     }
 
     /// inferior の stdin にテキストを送信する（PTY マスターに書き込む）
@@ -248,7 +273,7 @@ impl GdbBackend {
 }
 
 /// GDB/MI の 1 行出力を解析し、対応するイベントを返す
-fn parse_gdb_line(line: &str) -> Option<GdbEvent> {
+fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Option<GdbEvent> {
     if line.starts_with("*stopped") {
         let file = extract_value(line, "fullname").map(PathBuf::from);
         let line_no = extract_value(line, "line").and_then(|s| s.parse::<u32>().ok());
@@ -270,23 +295,57 @@ fn parse_gdb_line(line: &str) -> Option<GdbEvent> {
             .and_then(|s| s.parse::<u32>().ok())
             .map(GdbEvent::BreakpointDeleted)
     } else if line.starts_with("1^done,variables=") {
-        // --no-values レスポンス: name と type のみ
-        let types = parse_variables_response(line)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|v| (v.name, v.type_name))
-            .collect();
-        Some(GdbEvent::VariableTypesReceived(types))
-    } else if line.starts_with("2^done,variables=") {
-        // --all-values レスポンス: name と value のみ（型は別途マージ）
+        // --simple-values レスポンス: name + type + 単純型の value
         let vars = parse_variables_response(line).unwrap_or_default();
+        tracing::info!("simple-values応答: {:?}", vars);
         Some(GdbEvent::VariablesUpdated(vars))
+    } else if line.contains("^done,value=") {
+        // -data-evaluate-expression レスポンス（配列値）
+        parse_array_value_response(line, pending_evals)
     } else if line.starts_with('@') {
         // GDB/MI 経由でのプログラム出力（set inferior-tty 使用時は通常発生しない）
         parse_program_output(line).map(GdbEvent::ProgramOutput)
     } else {
         None
     }
+}
+
+/// `N^done,value="..."` をパースし、pending_evals からトークン→変数名を解決して ArrayValue を返す
+fn parse_array_value_response(
+    line: &str,
+    pending_evals: &Mutex<HashMap<u64, String>>,
+) -> Option<GdbEvent> {
+    // トークン番号を行頭から抽出する
+    let caret = line.find('^')?;
+    let token: u64 = line[..caret].parse().ok()?;
+
+    // pending_evals からトークンに対応する変数名を取り出す
+    let var_name = {
+        let mut map = pending_evals.lock().unwrap();
+        map.remove(&token)?
+    };
+
+    // `^done,value="..."` の value を抽出する
+    let value_prefix = "^done,value=\"";
+    let value_start = line[caret..].find(value_prefix)? + value_prefix.len() + caret;
+    let rest = &line[value_start..];
+
+    let mut value = String::new();
+    let mut chars = rest.chars();
+    loop {
+        match chars.next()? {
+            '\\' => {
+                if let Some(c) = chars.next() {
+                    value.push(c);
+                }
+            }
+            '"' => break,
+            c => value.push(c),
+        }
+    }
+
+    tracing::info!("配列値応答: {} = {}", var_name, value);
+    Some(GdbEvent::ArrayValue { name: var_name, value })
 }
 
 /// `^done,bkpt={number="1",...,fullname="...",...,line="4",...}` をパースして Breakpoint を返す

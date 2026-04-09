@@ -75,8 +75,6 @@ pub struct App {
     pub restart_requested: bool,
     /// プログラムが実行中（GdbEvent::Running 受信後、Stopped 受信前）
     program_running: bool,
-    /// --no-values で取得した (name, type_name) のリスト（--all-values とマージするまで保持）
-    pending_var_types: Vec<(String, String)>,
 }
 
 impl App {
@@ -116,7 +114,6 @@ impl App {
             stdin_buffer: String::new(),
             restart_requested: false,
             program_running: false,
-            pending_var_types: Vec::new(),
         })
     }
 
@@ -191,7 +188,6 @@ impl App {
         self.input_buffer.clear();
         self.stdin_buffer.clear();
         self.program_running = false;
-        self.pending_var_types.clear();
         self.status_message = "再起動しました".to_string();
     }
 
@@ -344,44 +340,40 @@ impl App {
                     self.status_message = "実行中...".to_string();
                     self.program_running = true;
                 }
-                GdbEvent::VariableTypesReceived(types) => {
-                    self.pending_var_types = types;
-                }
-                GdbEvent::VariablesUpdated(mut vars) => {
-                    // --no-values で取得した型情報をマージする
-                    for var in &mut vars {
-                        if let Some((_, type_name)) = self
-                            .pending_var_types
-                            .iter()
-                            .find(|(n, _)| n == &var.name)
-                        {
-                            var.type_name = type_name.clone();
-                        }
-                    }
-                    self.pending_var_types.clear();
+                GdbEvent::VariablesUpdated(vars) => {
+                    tracing::info!("simple-values受信: {:?}", vars);
+                    // 配列型変数の name を収集してから self.variables を更新する
+                    let array_names: Vec<String> = vars
+                        .iter()
+                        .filter(|v| v.type_name.contains('['))
+                        .map(|v| v.name.clone())
+                        .collect();
+
                     // 前の変数を保存してから新しい変数で更新する
                     self.prev_variables = std::mem::take(&mut self.variables);
                     self.variables = vars;
-                    // gdb の可変借用中は self メソッドを呼べないためインライン計算する
-                    let collapsed = &self.collapsed_vars;
-                    let total: usize = self.variables.iter().map(|var| {
-                        if var.type_name.contains('[')
-                            && var.value.trim().starts_with('{')
-                            && !collapsed.contains(&var.name)
-                        {
-                            let t = var.value.trim();
-                            let inner = &t[1..t.len() - 1];
-                            1 + if inner.trim().is_empty() { 0 } else { inner.split(',').count() }
-                        } else {
-                            1
-                        }
-                    }).sum();
+
+                    // カーソル位置を補正する（配列は未展開で計算）
+                    let total = self.variables.len();
                     let max_pos = total.saturating_sub(1);
                     if self.var_cursor > max_pos {
                         self.var_cursor = max_pos;
                     }
                     if self.var_scroll > max_pos {
                         self.var_scroll = max_pos;
+                    }
+
+                    // 配列型変数の値を個別に取得する
+                    for name in &array_names {
+                        if let Err(e) = gdb.request_array_value(name) {
+                            tracing::error!("配列値要求エラー: {}", e);
+                        }
+                    }
+                }
+                GdbEvent::ArrayValue { name, value } => {
+                    tracing::info!("配列値受信: {} = {}", name, value);
+                    if let Some(var) = self.variables.iter_mut().find(|v| v.name == name) {
+                        var.value = value;
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
