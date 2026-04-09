@@ -46,6 +46,21 @@ fn char_array_to_string(value: &str) -> String {
     format!("\"{}\"", result)
 }
 
+/// double/float の値を小数点以下6桁に丸め、末尾の余分な0を除去する
+fn format_float_value(value: &str) -> String {
+    if let Ok(f) = value.parse::<f64>() {
+        let s = format!("{:.6}", f);
+        let s = s.trim_end_matches('0');
+        if s.ends_with('.') {
+            format!("{}0", s)
+        } else {
+            s.to_string()
+        }
+    } else {
+        value.to_string()
+    }
+}
+
 /// 値が30文字を超える場合は末尾を ... で切り詰める
 fn truncate_value(value: &str) -> String {
     const MAX_LEN: usize = 30;
@@ -172,6 +187,7 @@ fn build_rows<'a>(
             if !collapsed {
                 let elements = parse_array_elements(&var.value);
                 let is_char = var.type_name.starts_with("char [");
+                let is_float = var.type_name.starts_with("double [") || var.type_name.starts_with("float [");
 
                 for (i, elem) in elements.iter().enumerate() {
                     let elem_cursor = focused && render_row_idx == app.var_cursor;
@@ -179,6 +195,8 @@ fn build_rows<'a>(
 
                     let display_value = if is_char {
                         format_char_element(elem)
+                    } else if is_float {
+                        format_float_value(elem)
                     } else {
                         elem.clone()
                     };
@@ -195,6 +213,8 @@ fn build_rows<'a>(
             // 通常変数（または "{" で始まらない型）
             let display_value = if var.type_name.starts_with("char [") {
                 char_array_to_string(&var.value)
+            } else if var.type_name == "double" || var.type_name == "float" {
+                format_float_value(&var.value)
             } else {
                 truncate_value(&var.value)
             };
