@@ -24,9 +24,6 @@ pub enum InputMode {
     StdinInput,
 }
 
-/// console_lines に追加するユーザー入力行のマーカープレフィックス
-pub const STDIN_LINE_MARKER: &str = "\x01";
-
 pub struct App {
     pub focused_panel: Panel,
     /// GDB バックエンド（実行ファイルが指定された場合のみ Some）
@@ -59,6 +56,8 @@ pub struct App {
     pub collapsed_vars: HashSet<String>,
     /// コンソール出力行（最大 500 行）
     pub console_lines: Vec<String>,
+    /// 改行待ちのコンソール行バッファ
+    pub console_line_buf: String,
     /// 設定済みブレークポイント一覧
     pub breakpoints: Vec<Breakpoint>,
     /// ソースビューのカーソル行（1-origin）
@@ -108,6 +107,7 @@ impl App {
             var_col_scroll: 0,
             collapsed_vars: HashSet::new(),
             console_lines: Vec::new(),
+            console_line_buf: String::new(),
             breakpoints: Vec::new(),
             source_cursor: 1,
             source_scroll: 0,
@@ -181,6 +181,7 @@ impl App {
         self.variables.clear();
         self.prev_variables.clear();
         self.console_lines.clear();
+        self.console_line_buf.clear();
         self.source_cursor = 1;
         self.source_scroll = 0;
         self.console_scroll = None;
@@ -213,12 +214,6 @@ impl App {
                             self.status_message = format!("入力送信エラー: {}", e);
                         }
                     }
-                    // マーカープレフィックスを先頭に付けて追加（console_view で Cyan 表示）
-                    let line = format!("{}> {}", STDIN_LINE_MARKER, text);
-                    if self.console_lines.len() >= 500 {
-                        self.console_lines.remove(0);
-                    }
-                    self.console_lines.push(line);
                     self.stdin_buffer.clear();
                     self.input_mode = InputMode::Normal;
                     self.console_scroll = None;
@@ -397,13 +392,15 @@ impl App {
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
-                    for part in text.split('\n') {
-                        let trimmed = part.trim_end_matches('\r');
-                        if !trimmed.is_empty() {
+                    for ch in text.chars() {
+                        if ch == '\n' {
+                            let line = std::mem::take(&mut self.console_line_buf);
                             if self.console_lines.len() >= 500 {
                                 self.console_lines.remove(0);
                             }
-                            self.console_lines.push(trimmed.to_string());
+                            self.console_lines.push(line);
+                        } else if ch != '\r' {
+                            self.console_line_buf.push(ch);
                         }
                     }
                 }
@@ -418,6 +415,7 @@ impl App {
                 }
             }
         }
+
     }
 
     /// -exec-next（ステップオーバー）を GDB に送信する

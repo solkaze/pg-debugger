@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, Panel, STDIN_LINE_MARKER};
+use crate::app::{App, InputMode, Panel};
 
 pub fn render(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let focused = app.focused_panel == Panel::Console;
@@ -47,7 +47,13 @@ pub fn render(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // --- 出力エリア ---
     let view_height = output_area.height as usize;
-    if app.console_lines.is_empty() {
+
+    let mut display_lines = app.console_lines.clone();
+    if !app.console_line_buf.is_empty() {
+        display_lines.push(app.console_line_buf.clone());
+    }
+
+    if display_lines.is_empty() {
         f.render_widget(
             Paragraph::new("(出力なし)")
                 .style(Style::default().fg(Color::DarkGray)),
@@ -55,26 +61,15 @@ pub fn render(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         );
     } else {
         let skip = match app.console_scroll {
-            None => app.console_lines.len().saturating_sub(view_height),
+            None => display_lines.len().saturating_sub(view_height),
             Some(n) => n,
         };
 
-        let lines: Vec<Line> = app
-            .console_lines
+        let lines: Vec<Line> = display_lines
             .iter()
             .skip(skip)
             .take(view_height)
-            .map(|text| {
-                if let Some(content) = text.strip_prefix(STDIN_LINE_MARKER) {
-                    // ユーザー入力行はシアンで表示
-                    Line::from(Span::styled(
-                        content.to_string(),
-                        Style::default().fg(Color::Cyan),
-                    ))
-                } else {
-                    Line::from(Span::raw(text.clone()))
-                }
-            })
+            .map(|text| Line::from(Span::raw(text.clone())))
             .collect();
 
         f.render_widget(Paragraph::new(lines), output_area);

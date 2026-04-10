@@ -85,7 +85,7 @@ fn format_char_ptr_value(value: &str) -> String {
         tracing::debug!("format_char_ptr_value: no string content, returning address");
         return trimmed.to_string();
     }
-    let result = decode_gdb_octal_string(rest);
+    let result = format!("\"{}\"", decode_gdb_octal_string(rest));
     tracing::debug!("format_char_ptr_value output={:?}", result);
     result
 }
@@ -233,7 +233,7 @@ fn build_rows<'a>(
                         decode_numeric_char_array(&var.value)
                     } else {
                         // "\343\201\223..." 8進数エスケープ形式 → デコード
-                        decode_gdb_octal_string(&var.value)
+                        format!("\"{}\"", decode_gdb_octal_string(&var.value))
                     }
                 } else {
                     truncate_value(&var.value)
@@ -283,7 +283,7 @@ fn build_rows<'a>(
                 format_char_ptr_value(&var.value)
             } else if var.type_name.starts_with("char [") {
                 // ArrayValue で raw 値が保持されているのでここで一度だけデコードする
-                let decoded = decode_gdb_octal_string(&var.value);
+                let decoded = format!("\"{}\"", decode_gdb_octal_string(&var.value));
                 tracing::debug!("char[] decode: input={:?} output={:?}", var.value, decoded);
                 decoded
             } else if var.type_name == "double" || var.type_name == "float" {

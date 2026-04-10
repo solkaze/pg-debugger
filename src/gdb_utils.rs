@@ -9,12 +9,14 @@ fn strip_gdb_repeat_notation(s: &str) -> String {
 }
 
 /// GDB の 8進数エスケープ文字列 `"\343\201\202..."` をUTF-8文字列にデコードする。
-/// 外側のクォートを除去してデコードし、結果を `"..."` 形式で返す。
+/// 外側のクォートを除去してデコードし、クォートなしの文字列を返す。
+/// 呼び出し側で必要に応じて `"..."` を付けること。
 pub fn decode_gdb_octal_string(value: &str) -> String {
     let value = strip_gdb_repeat_notation(value.trim());
     let s = value.trim();
-    let s = s.strip_prefix('"').unwrap_or(s);
-    let s = s.strip_suffix('"').unwrap_or(s);
+    // GDB MI エンコード由来の `\"..."\"` と bare `"..."` の両方に対応する
+    let s = if s.starts_with("\\\"") { &s[2..] } else { s.strip_prefix('"').unwrap_or(s) };
+    let s = if s.ends_with("\\\"") { &s[..s.len()-2] } else { s.strip_suffix('"').unwrap_or(s) };
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut chars = s.chars().peekable();
@@ -50,18 +52,14 @@ pub fn decode_gdb_octal_string(value: &str) -> String {
     }
 
     match String::from_utf8(bytes.clone()) {
-        Ok(s) => {
-            let s = s.split('\0').next().unwrap_or("").to_string();
-            format!("\"{}\"", s)
-        }
+        Ok(s) => s.split('\0').next().unwrap_or("").to_string(),
         Err(_) => {
             // UTF-8でない場合はASCII範囲のみ表示
-            let ascii: String = bytes
+            bytes
                 .iter()
                 .take_while(|&&b| b != 0)
                 .map(|&b| if (32..=126).contains(&b) { b as char } else { '?' })
-                .collect();
-            format!("\"{}\"", ascii)
+                .collect()
         }
     }
 }
