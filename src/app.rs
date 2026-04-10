@@ -7,6 +7,15 @@ use crate::compiler;
 use crate::debugger::gdb::{GdbBackend, GdbEvent};
 use crate::debugger::{Breakpoint, Variable};
 
+/// ステップイン時に保存する呼び出し元フレームの表示状態
+pub struct FrameView {
+    pub file: PathBuf,
+    pub source_lines: Vec<String>,
+    /// ハイライト行（1-origin、赤でマーク）
+    pub highlight_line: usize,
+    pub scroll_offset: usize,
+}
+
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum Panel {
     #[default]
@@ -78,6 +87,14 @@ pub struct App {
     pub restart_requested: bool,
     /// プログラムが実行中（GdbEvent::Running 受信後、Stopped 受信前）
     program_running: bool,
+    /// ターミナルの高さ（メインループからフレームごとに更新）
+    pub terminal_height: u16,
+    /// ステップイン時に表示するコールスタック（[0]=最古の呼び出し元、last()=直前フレーム）
+    pub frame_stack: Vec<FrameView>,
+    /// 前回の Stopped 時点でのスタック深さ（初期値 1）
+    prev_stack_depth: usize,
+    /// 直前の Stopped イベントで保存した呼び出し元フレーム（StackDepth で使用）
+    prev_stop_frame: Option<FrameView>,
 }
 
 impl App {
@@ -124,6 +141,10 @@ impl App {
             stdin_buffer: String::new(),
             restart_requested: false,
             program_running: false,
+            terminal_height: 0,
+            frame_stack: Vec::new(),
+            prev_stack_depth: 1,
+            prev_stop_frame: None,
         })
     }
 
@@ -214,6 +235,9 @@ impl App {
         self.input_buffer.clear();
         self.stdin_buffer.clear();
         self.program_running = false;
+        self.frame_stack.clear();
+        self.prev_stack_depth = 1;
+        self.prev_stop_frame = None;
         self.status_message = "再起動しました".to_string();
     }
 
@@ -337,6 +361,15 @@ impl App {
         while let Some(event) = gdb.try_recv_event() {
             match event {
                 GdbEvent::Stopped { file, line } => {
+                    // 現在の表示状態を呼び出し元フレームとして保存する（StackDepth で使用）
+                    if self.current_file.is_some() {
+                        self.prev_stop_frame = Some(FrameView {
+                            file: self.current_file.clone().unwrap_or_default(),
+                            source_lines: self.source_lines.clone(),
+                            highlight_line: self.current_line.unwrap_or(0) as usize,
+                            scroll_offset: self.source_scroll,
+                        });
+                    }
                     self.program_running = false;
                     self.status_message = format!("{}: {}行目", file.display(), line);
                     self.current_line = Some(line);
@@ -361,9 +394,12 @@ impl App {
                     }
                     self.current_file = Some(file.clone());
                     gdb.update_location(file, line);
-                    // 停止のたびに変数一覧を要求する
+                    // 停止のたびに変数一覧とスタック深さを要求する
                     if let Err(e) = gdb.request_variables() {
                         tracing::error!("変数要求エラー: {}", e);
+                    }
+                    if let Err(e) = gdb.request_stack_depth() {
+                        tracing::error!("スタック深さ要求エラー: {}", e);
                     }
                 }
                 GdbEvent::Running => {
@@ -433,6 +469,32 @@ impl App {
                 }
                 GdbEvent::Error(msg) => {
                     self.status_message = format!("GDB エラー: {}", msg);
+                }
+                GdbEvent::StackDepth(depth) => {
+                    let current_depth = depth;
+                    let prev_depth = self.prev_stack_depth;
+
+                    if current_depth > prev_depth {
+                        // ステップイン：直前の停止位置（呼び出し元）をスタックに積む
+                        if let Some(frame) = self.prev_stop_frame.take() {
+                            self.frame_stack.push(frame);
+                        }
+                    } else if current_depth < prev_depth {
+                        // ステップアウト：深さの差分だけポップする
+                        let diff = prev_depth - current_depth;
+                        for _ in 0..diff {
+                            self.frame_stack.pop();
+                        }
+                    }
+                    self.prev_stop_frame = None;
+                    self.prev_stack_depth = current_depth;
+                }
+                GdbEvent::Exited => {
+                    // プログラム終了時はコールスタック表示をクリアする
+                    self.frame_stack.clear();
+                    self.prev_stack_depth = 1;
+                    self.prev_stop_frame = None;
+                    self.program_running = false;
                 }
             }
         }
@@ -520,6 +582,16 @@ impl App {
         };
     }
 
+    /// コンソール出力エリアの表示行数を計算する。
+    /// ターミナル高さの約 30% からボーダー2行・入力行2行を引いた値。
+    fn console_view_height(&self) -> usize {
+        (self.terminal_height as usize)
+            .saturating_mul(30)
+            .saturating_div(100)
+            .saturating_sub(4)
+            .max(1)
+    }
+
     fn scroll_up(&mut self) {
         match self.focused_panel {
             Panel::Source => {
@@ -540,16 +612,15 @@ impl App {
                 }
             }
             Panel::Console => {
-                let view_height = 20usize;
-                match self.console_scroll {
-                    None => {
-                        // 最下部から1行上へ
-                        let max_skip = self.console_lines.len().saturating_sub(view_height);
-                        self.console_scroll = Some(max_skip.saturating_sub(1));
+                let view_height = self.console_view_height();
+                if let Some(n) = self.console_scroll {
+                    if n > 0 {
+                        self.console_scroll = Some(n - 1);
                     }
-                    Some(n) => {
-                        self.console_scroll = Some(n.saturating_sub(1));
-                    }
+                } else {
+                    // 最下部から1行上へ
+                    let max = self.console_lines.len().saturating_sub(view_height);
+                    self.console_scroll = Some(max);
                 }
             }
         }
@@ -579,11 +650,11 @@ impl App {
                 }
             }
             Panel::Console => {
-                let view_height = 20usize;
+                let view_height = self.console_view_height();
                 if let Some(n) = self.console_scroll {
-                    let max_skip = self.console_lines.len().saturating_sub(view_height);
-                    if n + 1 >= max_skip {
-                        self.console_scroll = None;
+                    let max = self.console_lines.len().saturating_sub(view_height);
+                    if n + 1 >= max {
+                        self.console_scroll = None; // 最下部で自動スクロールに戻る
                     } else {
                         self.console_scroll = Some(n + 1);
                     }
@@ -597,7 +668,7 @@ impl App {
         if self.focused_panel != Panel::Console {
             return;
         }
-        let view_height = 20usize;
+        let view_height = self.console_view_height();
         match self.console_scroll {
             None => {
                 let max_skip = self.console_lines.len().saturating_sub(view_height);
@@ -613,7 +684,7 @@ impl App {
         if self.focused_panel != Panel::Console {
             return;
         }
-        let view_height = 20usize;
+        let view_height = self.console_view_height();
         if let Some(n) = self.console_scroll {
             let max_skip = self.console_lines.len().saturating_sub(view_height);
             if n + view_height >= max_skip {

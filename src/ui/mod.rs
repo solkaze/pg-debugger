@@ -27,7 +27,17 @@ pub fn render(f: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(body[0]);
 
-    source_view::render(f, app, left[0]);
+    if app.frame_stack.is_empty() {
+        source_view::render(f, app, left[0]);
+    } else {
+        // ステップイン中：ソースエリアを左右2分割して呼び出し元と現在フレームを並べる
+        let source_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(left[0]);
+        source_view::render_frozen(f, app, source_chunks[0]); // 左: 呼び出し元フレーム
+        source_view::render(f, app, source_chunks[1]);         // 右: 現在フレーム
+    }
     console_view::render(f, app, left[1]);
     var_view::render(f, app, body[1]);
     status_bar::render(f, app, vertical[1]);

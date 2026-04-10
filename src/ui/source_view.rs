@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Panel};
+use crate::app::FrameView;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Source;
@@ -86,6 +87,81 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     text.clone(),
                     Style::default()
                         .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(bg),
+                )
+            } else {
+                Span::styled(text.clone(), Style::default().bg(bg))
+            };
+
+            Line::from(vec![bp_span, arrow_span, num_span, text_span])
+        })
+        .collect();
+
+    let widget = Paragraph::new(lines).block(block);
+    f.render_widget(widget, area);
+}
+
+/// 呼び出し元フレームを固定表示する（左パネル用）。
+/// frame_stack.last() の FrameView を使い、highlight_line を赤でマークする。
+pub fn render_frozen(f: &mut Frame, app: &App, area: Rect) {
+    let frame: &FrameView = match app.frame_stack.last() {
+        Some(fr) => fr,
+        None => return,
+    };
+
+    let file_name = frame.file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+    let title = format!("呼び出し元 – {}", file_name);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default());
+
+    if frame.source_lines.is_empty() {
+        let widget = Paragraph::new("(no file loaded)").block(block);
+        f.render_widget(widget, area);
+        return;
+    }
+
+    let view_height = area.height.saturating_sub(2) as usize;
+
+    // highlight_line は 1-origin → 0-origin に変換
+    let highlight_idx = frame.highlight_line.saturating_sub(1);
+
+    // ハイライト行が中央に来るようにスクロールオフセットを固定する
+    let scroll_offset = highlight_idx.saturating_sub(view_height / 2);
+
+    let line_num_width = frame.source_lines.len().to_string().len().max(2);
+
+    let lines: Vec<Line> = frame.source_lines
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(view_height)
+        .map(|(i, text)| {
+            let line_num = (i + 1) as u32;
+            let is_highlight = i == highlight_idx;
+
+            let bg = Color::Reset;
+            let bp_span = Span::styled(" ", Style::default().bg(bg));
+            let arrow_span = if is_highlight {
+                Span::styled("→", Style::default().fg(Color::Red).bg(bg))
+            } else {
+                Span::styled(" ", Style::default().bg(bg))
+            };
+            let num_span = Span::styled(
+                format!("{:>width$} | ", line_num, width = line_num_width),
+                Style::default().fg(Color::DarkGray).bg(bg),
+            );
+            let text_span = if is_highlight {
+                Span::styled(
+                    text.clone(),
+                    Style::default()
+                        .fg(Color::Red)
                         .add_modifier(Modifier::BOLD)
                         .bg(bg),
                 )

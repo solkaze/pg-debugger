@@ -97,7 +97,12 @@ async fn run_app(
         // GDB からのイベントを処理してから描画する
         app.poll_gdb_events();
 
-        terminal.draw(|f| ui::render(f, &app))?;
+        let mut frame_height = 0u16;
+        terminal.draw(|f| {
+            frame_height = f.area().height;
+            ui::render(f, &app);
+        })?;
+        app.terminal_height = frame_height;
 
         // 再起動フラグを検知して非同期で処理する
         if app.restart_requested {

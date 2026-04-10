@@ -30,6 +30,10 @@ pub enum GdbEvent {
     ProgramOutput(String),
     /// エラー発生
     Error(String),
+    /// スタック深さが取得できた（-stack-info-depth の結果）
+    StackDepth(usize),
+    /// プログラムが終了した（ファイル情報なしの停止）
+    Exited,
 }
 
 /// GDB/MI バックエンド
@@ -230,6 +234,11 @@ impl GdbBackend {
         self.send_command("1-stack-list-variables --simple-values")
     }
 
+    /// スタック深さを -stack-info-depth で取得する
+    pub fn request_stack_depth(&self) -> Result<()> {
+        self.send_command("-stack-info-depth")
+    }
+
     /// 配列型変数の値を -data-evaluate-expression で個別取得する
     pub fn request_array_value(&self, var_name: &str) -> Result<()> {
         let token = {
@@ -283,7 +292,7 @@ fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Op
             _ => {
                 // ファイル情報がない停止（プログラム終了等）
                 debug!("停止イベントにファイル情報なし: {}", line);
-                None
+                Some(GdbEvent::Exited)
             }
         }
     } else if line.starts_with("*running") {
@@ -299,6 +308,11 @@ fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Op
         let vars = parse_variables_response(line).unwrap_or_default();
         tracing::info!("simple-values応答: {:?}", vars);
         Some(GdbEvent::VariablesUpdated(vars))
+    } else if line.contains("^done,depth=") {
+        // -stack-info-depth レスポンス
+        extract_value(line, "depth")
+            .and_then(|s| s.parse::<usize>().ok())
+            .map(GdbEvent::StackDepth)
     } else if line.contains("^done,value=") {
         // -data-evaluate-expression レスポンス（配列値）
         parse_array_value_response(line, pending_evals)
