@@ -2,10 +2,7 @@
 # デバッグ・テスト用ファイル
 debug.log
 *.zip
-example
-example.c
-test.c
-src/
+*.c
 # コンパイル済みバイナリ（拡張子なし）
 /example
 claude.md
