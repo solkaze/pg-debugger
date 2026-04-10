@@ -30,8 +30,10 @@ pub struct App {
     gdb: Option<GdbBackend>,
     /// 再起動用の実行ファイルパス
     executable: Option<PathBuf>,
-    /// 元のソースファイルパス（再コンパイル用。実行ファイル直接指定時は None）
-    source_file: Option<PathBuf>,
+    /// 元のソースファイル一覧（再コンパイル用。実行ファイル直接指定時は空）
+    source_files: Vec<PathBuf>,
+    /// Makefile モードのターゲット（None=makeモードでない、Some(None)=デフォルトターゲット、Some(Some(t))=指定ターゲット）
+    make_target: Option<Option<String>>,
     /// 現在停止しているソースファイル
     pub current_file: Option<PathBuf>,
     /// 現在停止している行番号
@@ -81,7 +83,11 @@ pub struct App {
 impl App {
     /// アプリケーションを初期化する。
     /// executable が Some の場合は GDB を起動して main の先頭で停止させる。
-    pub async fn new(executable: Option<PathBuf>, source_file: Option<PathBuf>) -> Result<Self> {
+    pub async fn new(
+        executable: Option<PathBuf>,
+        source_files: Vec<PathBuf>,
+        make_target: Option<Option<String>>,
+    ) -> Result<Self> {
         let mut gdb = None;
 
         if let Some(ref exe) = executable {
@@ -94,7 +100,8 @@ impl App {
             focused_panel: Panel::Source,
             gdb,
             executable,
-            source_file,
+            source_files,
+            make_target,
             current_file: None,
             current_line: None,
             status_message: "準備完了 – n: Next  s: Step  f: Finish  c: Continue  q: Quit".to_string(),
@@ -127,13 +134,27 @@ impl App {
         self.gdb = None;
 
         // ソースファイルがある場合は再コンパイルする
-        if let Some(ref src) = self.source_file.clone() {
-            match compiler::compile_c(src).await {
+        if !self.source_files.is_empty() {
+            let files: Vec<&str> = self.source_files
+                .iter()
+                .filter_map(|p| p.to_str())
+                .collect();
+            match compiler::compile_c_files(&files).await {
                 Ok(bin) => {
                     self.executable = Some(bin);
                 }
                 Err(e) => {
                     self.status_message = format!("コンパイルエラー: {}", e);
+                    return;
+                }
+            }
+        } else if let Some(ref target) = self.make_target.clone() {
+            match compiler::build_with_make(target.as_deref()).await {
+                Ok(bin) => {
+                    self.executable = Some(bin);
+                }
+                Err(e) => {
+                    self.status_message = format!("makeエラー: {}", e);
                     return;
                 }
             }

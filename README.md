@@ -61,6 +61,15 @@ source ~/.bashrc
 # Cソースファイルを指定（自動でコンパイルしてデバッグ開始）
 ./pg-debugger example.c
 
+# 複数のCソースファイルを指定
+./pg-debugger main.c sub.c utils.c
+
+# Makefileを使ってビルド（デフォルトターゲット）
+./pg-debugger --make
+
+# Makefileで特定のターゲットをビルド
+./pg-debugger --make myprogram
+
 # コンパイル済み実行ファイルを指定
 ./pg-debugger ./a.out
 ```

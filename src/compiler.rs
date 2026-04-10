@@ -5,7 +5,15 @@ use tokio::process::Command;
 /// C ソースファイルを `gcc -g` でコンパイルし、出力バイナリのパスを返す。
 /// コンパイルに失敗した場合は stderr の内容を含むエラーを返す。
 pub async fn compile_c(source: &Path) -> Result<PathBuf> {
-    let stem = source
+    let s = source.to_str().unwrap_or("output");
+    compile_c_files(&[s]).await
+}
+
+/// 複数の C ソースファイルを `gcc -g` でコンパイルし、出力バイナリのパスを返す。
+/// 出力ファイル名は最初のファイルの stem を使う。
+/// コンパイルに失敗した場合は stderr の内容を含むエラーを返す。
+pub async fn compile_c_files(sources: &[&str]) -> Result<PathBuf> {
+    let stem = Path::new(sources[0])
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
@@ -30,7 +38,7 @@ pub async fn compile_c(source: &Path) -> Result<PathBuf> {
         .arg("-D_FORTIFY_SOURCE=0")
         .arg("-o")
         .arg(&out_path)
-        .arg(source)
+        .args(sources)
         .arg(&init_src)
         .output()
         .await?;
@@ -44,4 +52,54 @@ pub async fn compile_c(source: &Path) -> Result<PathBuf> {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         bail!(stderr)
     }
+}
+
+/// Makefile を使ってビルドし、生成された実行ファイルのパスを返す。
+/// target が None の場合は Makefile のデフォルトターゲットを使う。
+pub async fn build_with_make(target: Option<&str>) -> Result<PathBuf> {
+    if !Path::new("Makefile").exists() && !Path::new("makefile").exists() {
+        bail!("Makefileが見つかりません");
+    }
+
+    let mut cmd = Command::new("make");
+    if let Some(t) = target {
+        cmd.arg(t);
+    }
+    let output = cmd.output().await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        bail!("makeエラー:\n{}", stderr);
+    }
+
+    let exe = if let Some(t) = target {
+        PathBuf::from(format!("./{}", t))
+    } else {
+        find_makefile_default_target()?
+    };
+
+    if !exe.exists() {
+        bail!("makeで生成された実行ファイルが見つかりません: {}", exe.display());
+    }
+
+    Ok(exe)
+}
+
+/// Makefile を読んで最初の non-.PHONY ターゲット名を返す。
+fn find_makefile_default_target() -> Result<PathBuf> {
+    let content = std::fs::read_to_string("Makefile")
+        .or_else(|_| std::fs::read_to_string("makefile"))?;
+
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() || line.starts_with('.') {
+            continue;
+        }
+        if let Some(target) = line.split(':').next() {
+            let target = target.trim();
+            if !target.is_empty() && !target.contains(' ') {
+                return Ok(PathBuf::from(format!("./{}", target)));
+            }
+        }
+    }
+    bail!("Makefileのデフォルトターゲットが見つかりません")
 }

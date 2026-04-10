@@ -22,24 +22,52 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_writer(log_file).init();
 
     // コマンドライン引数から実行ファイルパスを取得
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // .c ファイルが渡された場合はコンパイルしてから起動する
-    let source_file: Option<std::path::PathBuf> = args
-        .get(1)
-        .filter(|a| a.ends_with(".c"))
-        .map(|a| std::path::PathBuf::from(a));
+    if args.is_empty() {
+        eprintln!("使い方: pg-debugger <ファイル.c> [ファイル2.c ...]");
+        eprintln!("        pg-debugger --make [ターゲット]");
+        std::process::exit(1);
+    }
 
-    let executable: Option<std::path::PathBuf> = if let Some(ref src) = source_file {
-        match compiler::compile_c(src).await {
-            Ok(bin) => Some(bin),
+    let executable: Option<std::path::PathBuf>;
+    let source_files: Vec<std::path::PathBuf>;
+    let make_target: Option<Option<String>>;
+
+    if args[0] == "--make" {
+        // Makefile モード
+        let target = args.get(1).cloned();
+        make_target = Some(target.clone());
+        source_files = vec![];
+        match compiler::build_with_make(target.as_deref()).await {
+            Ok(bin) => executable = Some(bin),
             Err(e) => {
-                eprintln!("コンパイルエラー:\n{}\n終了します。", e);
+                eprintln!("{}\n終了します。", e);
                 std::process::exit(1);
             }
         }
     } else {
-        args.get(1).map(|a| std::path::PathBuf::from(a))
+        make_target = None;
+        let c_files: Vec<&str> = args.iter()
+            .filter(|a| a.ends_with(".c"))
+            .map(|s| s.as_str())
+            .collect();
+
+        if !c_files.is_empty() {
+            // C ソースファイルをコンパイルして起動する
+            source_files = c_files.iter().map(|s| std::path::PathBuf::from(s)).collect();
+            match compiler::compile_c_files(&c_files).await {
+                Ok(bin) => executable = Some(bin),
+                Err(e) => {
+                    eprintln!("コンパイルエラー:\n{}\n終了します。", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // コンパイル済み実行ファイルを直接起動する
+            source_files = vec![];
+            executable = args.first().map(|a| std::path::PathBuf::from(a));
+        }
     };
 
     enable_raw_mode()?;
@@ -48,7 +76,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, executable, source_file).await;
+    let result = run_app(&mut terminal, executable, source_files, make_target).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -60,9 +88,10 @@ async fn main() -> Result<()> {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     executable: Option<std::path::PathBuf>,
-    source_file: Option<std::path::PathBuf>,
+    source_files: Vec<std::path::PathBuf>,
+    make_target: Option<Option<String>>,
 ) -> Result<()> {
-    let mut app = App::new(executable, source_file).await?;
+    let mut app = App::new(executable, source_files, make_target).await?;
 
     loop {
         // GDB からのイベントを処理してから描画する
