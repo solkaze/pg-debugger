@@ -44,10 +44,15 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         InputMode::GotoLine => format!(" ジャンプ先の行番号を入力: {}_", app.input_buffer),
         InputMode::StdinInput => " Enterで送信  Escでキャンセル".to_string(),
         InputMode::Normal => {
-            if app.focused_panel == Panel::Vars {
-                " n/F10:次へ  s/F11:ステップイン  f/F12:ステップアウト  c:続行  b:BP切替  B:行指定BP  g:行ジャンプ  i:標準入力  r:再起動  Tab:切替  ←→:値スクロール  q:終了".to_string()
+            let gray_label = if app.gray_out_enabled {
+                "h:グレーアウト[ON]"
             } else {
-                " n/F10:次へ  s/F11:ステップイン  f/F12:ステップアウト  c:続行  b:BP切替  B:行指定BP  g:行ジャンプ  i:標準入力  r:再起動  Tab:切替  q:終了".to_string()
+                "h:グレーアウト[OFF]"
+            };
+            if app.focused_panel == Panel::Vars {
+                format!(" n/F10:次へ  s/F11:ステップイン  f/F12:ステップアウト  c:続行  b:BP切替  B:行指定BP  g:行ジャンプ  i:標準入力  r:再起動  Tab:切替  ←→:値スクロール  {}  q:終了", gray_label)
+            } else {
+                format!(" n/F10:次へ  s/F11:ステップイン  f/F12:ステップアウト  c:続行  b:BP切替  B:行指定BP  g:行ジャンプ  i:標準入力  r:再起動  Tab:切替  {}  q:終了", gray_label)
             }
         }
     };

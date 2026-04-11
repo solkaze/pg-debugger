@@ -14,6 +14,8 @@ pub struct FrameView {
     /// ハイライト行（1-origin、赤でマーク）
     pub highlight_line: usize,
     pub scroll_offset: usize,
+    /// このフレームが停止していたときの関数名
+    pub func_name: String,
 }
 
 #[derive(Default, Clone, Copy, PartialEq)]
@@ -95,6 +97,48 @@ pub struct App {
     prev_stack_depth: usize,
     /// 直前の Stopped イベントで保存した呼び出し元フレーム（StackDepth で使用）
     prev_stop_frame: Option<FrameView>,
+    /// 未着の ArrayValue の数（0 になるまで display_variables を更新しない）
+    pub pending_array_count: usize,
+    /// 実際に変数ビューに表示する変数リスト（ArrayValue が全部揃ってから一括更新）
+    pub display_variables: Vec<Variable>,
+    /// 現在停止中の関数名
+    pub current_func: String,
+    /// グレーアウト機能の有効/無効（トグル）
+    pub gray_out_enabled: bool,
+}
+
+/// ソースコード1行分の { } の個数を数える。
+/// 文字列リテラル・文字リテラル・行コメント内の {} は無視する。
+/// (open_count, close_count) を返す。
+fn count_braces(line: &str) -> (i32, i32) {
+    let mut opens = 0i32;
+    let mut closes = 0i32;
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut prev_char = ' ';
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if !in_char && prev_char != '\\' => in_string = !in_string,
+            '\'' if !in_string && prev_char != '\\' => in_char = !in_char,
+            '/' if !in_string && !in_char => {
+                if chars.peek() == Some(&'/') {
+                    break; // 行コメント以降は無視
+                }
+            }
+            '{' if !in_string && !in_char => opens += 1,
+            '}' if !in_string && !in_char => closes += 1,
+            _ => {}
+        }
+        prev_char = ch;
+    }
+    // 同じ行でバランスが取れている場合は0を返す
+    // （配列初期化 int a[]={1,2,3}; などを除外）
+    if opens == closes {
+        return (0, 0);
+    }
+    (opens, closes)
 }
 
 impl App {
@@ -145,6 +189,10 @@ impl App {
             frame_stack: Vec::new(),
             prev_stack_depth: 1,
             prev_stop_frame: None,
+            pending_array_count: 0,
+            display_variables: Vec::new(),
+            current_func: String::new(),
+            gray_out_enabled: false,
         })
     }
 
@@ -238,6 +286,9 @@ impl App {
         self.frame_stack.clear();
         self.prev_stack_depth = 1;
         self.prev_stop_frame = None;
+        self.pending_array_count = 0;
+        self.display_variables.clear();
+        self.current_func = String::new();
         self.status_message = "再起動しました".to_string();
     }
 
@@ -325,6 +376,9 @@ impl App {
                     self.input_mode = InputMode::StdinInput;
                     self.stdin_buffer.clear();
                 }
+                KeyCode::Char('h') => {
+                    self.gray_out_enabled = !self.gray_out_enabled;
+                }
                 KeyCode::Char('r') => {
                     self.restart_requested = true;
                 }
@@ -360,7 +414,8 @@ impl App {
 
         while let Some(event) = gdb.try_recv_event() {
             match event {
-                GdbEvent::Stopped { file, line } => {
+                GdbEvent::Stopped { file, line, func } => {
+                    self.current_func = func;
                     // 現在の表示状態を呼び出し元フレームとして保存する（StackDepth で使用）
                     if self.current_file.is_some() {
                         self.prev_stop_frame = Some(FrameView {
@@ -368,6 +423,7 @@ impl App {
                             source_lines: self.source_lines.clone(),
                             highlight_line: self.current_line.unwrap_or(0) as usize,
                             scroll_offset: self.source_scroll,
+                            func_name: self.current_func.clone(),
                         });
                     }
                     self.program_running = false;
@@ -416,18 +472,24 @@ impl App {
                         .map(|v| v.name.clone())
                         .collect();
 
+                    // ArrayValue が届くまで display_variables の更新を保留するためカウントをセットする
+                    self.pending_array_count = eval_names.len();
+
                     // 前の変数を保存してから新しい変数で更新する
                     self.prev_variables = std::mem::take(&mut self.variables);
                     self.variables = vars;
 
-                    // カーソル位置を補正する（配列は未展開で計算）
-                    let total = self.variables.len();
-                    let max_pos = total.saturating_sub(1);
-                    if self.var_cursor > max_pos {
-                        self.var_cursor = max_pos;
+                    // 配列なしの場合は即座に表示用変数を更新する
+                    if self.pending_array_count == 0 {
+                        self.display_variables = self.variables.clone();
                     }
-                    if self.var_scroll > max_pos {
-                        self.var_scroll = max_pos;
+                    // pending 中は display_variables を更新しない（前回の表示を維持）
+
+                    // カーソル・スクロール位置の補正はrenderに任せる
+                    // ここでは補正しない（ArrayValueがまだ届いておらず配列展開状態が不確定なため）
+                    // var_cursorがvar_scrollより小さくなる矛盾状態だけ防ぐ
+                    if self.var_cursor < self.var_scroll {
+                        self.var_scroll = self.var_cursor;
                     }
 
                     // 配列型・char*型変数の値を -data-evaluate-expression で個別に取得する
@@ -446,6 +508,13 @@ impl App {
                         );
                         // raw値をそのまま保持する。デコードは var_view.rs で一度だけ行う。
                         var.value = value;
+                    }
+                    // 全 ArrayValue が揃ったら display_variables を一括更新する
+                    if self.pending_array_count > 0 {
+                        self.pending_array_count -= 1;
+                    }
+                    if self.pending_array_count == 0 {
+                        self.display_variables = self.variables.clone();
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
@@ -704,7 +773,7 @@ impl App {
             self.var_cursor, cursor_info
         );
         if let Some((var_idx, true)) = cursor_info {
-            let var = &self.variables[var_idx];
+            let var = &self.display_variables[var_idx];
             if var.type_name.contains('[') && var.value.trim().starts_with('{') {
                 let name = var.name.clone();
                 if self.collapsed_vars.contains(&name) {
@@ -719,7 +788,7 @@ impl App {
     /// カーソル行がどの変数のどの行かを返す（var_index, is_header）
     pub fn var_cursor_var_index(&self) -> Option<(usize, bool)> {
         let mut row = 0usize;
-        for (i, var) in self.variables.iter().enumerate() {
+        for (i, var) in self.display_variables.iter().enumerate() {
             if row == self.var_cursor {
                 return Some((i, true));
             }
@@ -741,7 +810,7 @@ impl App {
     /// 変数ビューの総表示行数を返す
     pub fn var_render_rows(&self) -> usize {
         let mut count = 0;
-        for var in &self.variables {
+        for var in &self.display_variables {
             count += 1;
             if var.type_name.contains('[')
                 && var.value.trim().starts_with('{')
@@ -756,7 +825,163 @@ impl App {
     /// カーソル位置の変数の完全な値を返す（ステータスバー表示用）
     pub fn var_cursor_full_value(&self) -> Option<String> {
         let (var_idx, _) = self.var_cursor_var_index()?;
-        Some(self.variables[var_idx].value.clone())
+        Some(self.display_variables[var_idx].value.clone())
+    }
+
+    /// current_func の定義範囲を source_lines から推定して返す（1-origin）
+    pub fn current_func_range(&self) -> Option<(usize, usize)> {
+        let func_name = &self.current_func;
+        if func_name.is_empty() {
+            return None;
+        }
+
+        let lines = &self.source_lines;
+
+        // 関数定義行を探す
+        let start_line = lines.iter().enumerate().find_map(|(i, line)| {
+            if line.contains(&format!("{}(", func_name))
+                || line.contains(&format!("{} (", func_name))
+            {
+                Some(i + 1) // 1-origin
+            } else {
+                None
+            }
+        })?;
+
+        // 開始行以降で最初の { を探す
+        let mut brace_start = None;
+        for (i, line) in lines.iter().enumerate().skip(start_line - 1) {
+            if line.contains('{') {
+                brace_start = Some(i);
+                break;
+            }
+        }
+        let brace_start = brace_start?;
+
+        // 対応する } を深さを追って探す
+        let mut depth = 0usize;
+        let mut end_line = None;
+        for (i, line) in lines.iter().enumerate().skip(brace_start) {
+            for ch in line.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        if depth > 0 { depth -= 1; }
+                        if depth == 0 {
+                            end_line = Some(i + 1); // 1-origin
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if end_line.is_some() { break; }
+        }
+
+        Some((start_line, end_line.unwrap_or(lines.len())))
+    }
+
+    /// source_lines の line 行目（1-origin）が属する関数のスコープを返す（1-origin）
+    pub fn func_range_at_line(&self, line: usize) -> Option<(usize, usize)> {
+        let lines = &self.source_lines;
+
+        // line 行目より前にある最後の関数定義を探す
+        let mut func_start = None;
+        for i in (0..line.min(lines.len())).rev() {
+            let l = &lines[i];
+            let trimmed = l.trim();
+            if !l.starts_with(' ') && !l.starts_with('\t')
+                && l.contains('(')
+                && !trimmed.starts_with("if")
+                && !trimmed.starts_with("for")
+                && !trimmed.starts_with("while")
+                && !trimmed.starts_with("switch")
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with('#')
+            {
+                func_start = Some(i);
+                break;
+            }
+        }
+
+        let func_start = func_start?;
+
+        // func_start 以降で最初の { を探す
+        let mut brace_start = None;
+        for (i, l) in lines.iter().enumerate().skip(func_start) {
+            if l.contains('{') {
+                brace_start = Some(i);
+                break;
+            }
+        }
+        let brace_start = brace_start?;
+
+        // 対応する } を深さを追って探す
+        let mut depth = 0usize;
+        let mut end_line = None;
+        for (i, l) in lines.iter().enumerate().skip(brace_start) {
+            for ch in l.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        if depth > 0 { depth -= 1; }
+                        if depth == 0 {
+                            end_line = Some(i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if end_line.is_some() { break; }
+        }
+
+        Some((func_start + 1, end_line.unwrap_or(lines.len())))
+    }
+
+    /// current_line が属する最も内側の {} ブロックの開始行と終了行を返す（1-origin）
+    pub fn current_block_range(&self) -> Option<(usize, usize)> {
+        let target = match self.current_line {
+            Some(l) => l as usize,
+            None => return None,
+        };
+        let lines = &self.source_lines;
+        if lines.is_empty() {
+            return None;
+        }
+
+        // target 行より前を逆順に走査して対応する { を探す
+        // 文字列リテラル・文字リテラル・行コメント内の {} は無視する
+        let mut depth = 0i32;
+        let mut open_line = None;
+
+        for i in (0..target.saturating_sub(1)).rev() {
+            let (opens, closes) = count_braces(&lines[i]);
+            // 逆順なのでcloseが深さを増やし、openが深さを減らす
+            depth += closes - opens;
+            if depth < 0 {
+                open_line = Some(i + 1); // 1-origin
+                break;
+            }
+        }
+
+        let open_line = open_line?;
+
+        // open_line 以降で対応する } を探す
+        // open_line の行から始めることで、その行の { を起点にカウントする
+        let mut depth = 0i32;
+        let mut close_line = None;
+
+        for i in (open_line - 1)..lines.len() {
+            let (opens, closes) = count_braces(&lines[i]);
+            depth += opens - closes;
+            if depth == 0 && (opens > 0 || closes > 0) {
+                close_line = Some(i + 1); // 1-origin
+                break;
+            }
+        }
+
+        Some((open_line, close_line.unwrap_or(lines.len())))
     }
 }
 

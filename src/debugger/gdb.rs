@@ -15,7 +15,7 @@ use super::{Breakpoint, DebuggerState, Variable};
 #[derive(Debug, Clone)]
 pub enum GdbEvent {
     /// プログラムが停止した（ステップ完了・ブレークポイント等）
-    Stopped { file: PathBuf, line: u32 },
+    Stopped { file: PathBuf, line: u32, func: String },
     /// プログラムが実行中
     Running,
     /// 変数一覧が更新された（--simple-values の結果）
@@ -286,9 +286,10 @@ fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Op
     if line.starts_with("*stopped") {
         let file = extract_value(line, "fullname").map(PathBuf::from);
         let line_no = extract_value(line, "line").and_then(|s| s.parse::<u32>().ok());
+        let func = extract_value(line, "func").unwrap_or_default();
 
         match (file, line_no) {
-            (Some(file), Some(line)) => Some(GdbEvent::Stopped { file, line }),
+            (Some(file), Some(line)) => Some(GdbEvent::Stopped { file, line, func }),
             _ => {
                 // ファイル情報がない停止（プログラム終了等）
                 debug!("停止イベントにファイル情報なし: {}", line);

@@ -141,7 +141,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    if app.variables.is_empty() {
+    if app.display_variables.is_empty() {
         let widget = Paragraph::new("(変数なし)").block(block);
         f.render_widget(widget, area);
         return;
@@ -152,7 +152,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .prev_variables
         .iter()
         .filter_map(|prev| {
-            let current = app.variables.iter().find(|v| v.name == prev.name)?;
+            let current = app.display_variables.iter().find(|v| v.name == prev.name)?;
             if current.value != prev.value {
                 Some(prev.name.as_str())
             } else {
@@ -206,7 +206,7 @@ fn build_rows<'a>(
     let mut rows: Vec<Row<'static>> = Vec::new();
     let mut render_row_idx = 0usize;
 
-    for var in &app.variables {
+    for var in &app.display_variables {
         let is_changed = changed.contains(var.name.as_str());
         let base_fg = if is_changed { Color::Green } else { Color::Reset };
 
