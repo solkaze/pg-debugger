@@ -107,39 +107,6 @@ pub struct App {
     pub gray_out_enabled: bool,
 }
 
-/// ソースコード1行分の { } の個数を数える。
-/// 文字列リテラル・文字リテラル・行コメント内の {} は無視する。
-/// (open_count, close_count) を返す。
-fn count_braces(line: &str) -> (i32, i32) {
-    let mut opens = 0i32;
-    let mut closes = 0i32;
-    let mut in_string = false;
-    let mut in_char = false;
-    let mut prev_char = ' ';
-    let mut chars = line.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match ch {
-            '"' if !in_char && prev_char != '\\' => in_string = !in_string,
-            '\'' if !in_string && prev_char != '\\' => in_char = !in_char,
-            '/' if !in_string && !in_char => {
-                if chars.peek() == Some(&'/') {
-                    break; // 行コメント以降は無視
-                }
-            }
-            '{' if !in_string && !in_char => opens += 1,
-            '}' if !in_string && !in_char => closes += 1,
-            _ => {}
-        }
-        prev_char = ch;
-    }
-    // 同じ行でバランスが取れている場合は0を返す
-    // （配列初期化 int a[]={1,2,3}; などを除外）
-    if opens == closes {
-        return (0, 0);
-    }
-    (opens, closes)
-}
 
 impl App {
     /// アプリケーションを初期化する。
@@ -941,47 +908,161 @@ impl App {
 
     /// current_line が属する最も内側の {} ブロックの開始行と終了行を返す（1-origin）
     pub fn current_block_range(&self) -> Option<(usize, usize)> {
-        let target = match self.current_line {
-            Some(l) => l as usize,
-            None => return None,
-        };
+        let target = self.current_line? as usize;
         let lines = &self.source_lines;
         if lines.is_empty() {
             return None;
         }
 
-        // target 行より前を逆順に走査して対応する { を探す
-        // 文字列リテラル・文字リテラル・行コメント内の {} は無視する
+        // 文字列・文字リテラル・行コメント内の {} を除いた (opens, closes) を返す
+        fn net_braces(line: &str) -> (i32, i32) {
+            let mut opens = 0i32;
+            let mut closes = 0i32;
+            let mut in_string = false;
+            let mut in_char_lit = false;
+            let mut prev = ' ';
+            let chars: Vec<char> = line.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let ch = chars[i];
+                match ch {
+                    '"' if !in_char_lit && prev != '\\' => in_string = !in_string,
+                    '\'' if !in_string && prev != '\\' => in_char_lit = !in_char_lit,
+                    '/' if !in_string && !in_char_lit => {
+                        if i + 1 < chars.len() && chars[i + 1] == '/' {
+                            break;
+                        }
+                    }
+                    '{' if !in_string && !in_char_lit => opens += 1,
+                    '}' if !in_string && !in_char_lit => closes += 1,
+                    _ => {}
+                }
+                prev = ch;
+                i += 1;
+            }
+            (opens, closes)
+        }
+
+        // open_line 内の最後の { の文字位置を返す
+        fn find_last_open_brace(line: &str) -> Option<usize> {
+            let mut in_string = false;
+            let mut in_char_lit = false;
+            let mut prev = ' ';
+            let mut last_pos = None;
+            let chars: Vec<char> = line.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let ch = chars[i];
+                match ch {
+                    '"' if !in_char_lit && prev != '\\' => in_string = !in_string,
+                    '\'' if !in_string && prev != '\\' => in_char_lit = !in_char_lit,
+                    '/' if !in_string && !in_char_lit => {
+                        if i + 1 < chars.len() && chars[i + 1] == '/' {
+                            break;
+                        }
+                    }
+                    '{' if !in_string && !in_char_lit => last_pos = Some(i),
+                    _ => {}
+                }
+                prev = ch;
+                i += 1;
+            }
+            last_pos
+        }
+
+        // start_line の start_char 以降から文字単位で前向き走査し、
+        // depth=0 になった行を 1-origin で返す
+        fn scan_for_close(
+            lines: &[String],
+            start_line: usize,
+            start_char: usize,
+        ) -> Option<usize> {
+            let mut depth = 1i32;
+
+            // start_line の start_char 以降を処理
+            {
+                let chars: Vec<char> = lines[start_line].chars().collect();
+                let mut in_string = false;
+                let mut in_char_lit = false;
+                let mut prev = ' ';
+                for j in start_char..chars.len() {
+                    let ch = chars[j];
+                    match ch {
+                        '"' if !in_char_lit && prev != '\\' => in_string = !in_string,
+                        '\'' if !in_string && prev != '\\' => in_char_lit = !in_char_lit,
+                        '/' if !in_string && !in_char_lit => {
+                            if j + 1 < chars.len() && chars[j + 1] == '/' {
+                                break;
+                            }
+                        }
+                        '{' if !in_string && !in_char_lit => depth += 1,
+                        '}' if !in_string && !in_char_lit => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(start_line + 1); // 1-origin
+                            }
+                        }
+                        _ => {}
+                    }
+                    prev = ch;
+                }
+            }
+
+            // start_line+1 以降を行単位で処理
+            for i in (start_line + 1)..lines.len() {
+                let chars: Vec<char> = lines[i].chars().collect();
+                let mut in_string = false;
+                let mut in_char_lit = false;
+                let mut prev = ' ';
+                for j in 0..chars.len() {
+                    let ch = chars[j];
+                    match ch {
+                        '"' if !in_char_lit && prev != '\\' => in_string = !in_string,
+                        '\'' if !in_string && prev != '\\' => in_char_lit = !in_char_lit,
+                        '/' if !in_string && !in_char_lit => {
+                            if j + 1 < chars.len() && chars[j + 1] == '/' {
+                                break;
+                            }
+                        }
+                        '{' if !in_string && !in_char_lit => depth += 1,
+                        '}' if !in_string && !in_char_lit => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(i + 1); // 1-origin
+                            }
+                        }
+                        _ => {}
+                    }
+                    prev = ch;
+                }
+            }
+            None
+        }
+
+        // ステップ1: target 行の1つ前から逆順走査で open_line を見つける
         let mut depth = 0i32;
-        let mut open_line = None;
+        let mut open_line_0 = None;
+        let mut open_brace_char = 0usize;
 
         for i in (0..target.saturating_sub(1)).rev() {
-            let (opens, closes) = count_braces(&lines[i]);
-            // 逆順なのでcloseが深さを増やし、openが深さを減らす
+            let (opens, closes) = net_braces(&lines[i]);
             depth += closes - opens;
             if depth < 0 {
-                open_line = Some(i + 1); // 1-origin
+                open_line_0 = Some(i); // 0-indexed
+                open_brace_char = find_last_open_brace(&lines[i])
+                    .map(|p| p + 1) // { の次の文字から開始
+                    .unwrap_or(0);
                 break;
             }
         }
 
-        let open_line = open_line?;
+        let open_line_0 = open_line_0?;
+        let open_line_1 = open_line_0 + 1; // 1-origin
 
-        // open_line 以降で対応する } を探す
-        // open_line の行から始めることで、その行の { を起点にカウントする
-        let mut depth = 0i32;
-        let mut close_line = None;
+        // ステップ2+3: open_line の { の直後から文字単位で前向き走査
+        let close_line = scan_for_close(lines, open_line_0, open_brace_char)?;
 
-        for i in (open_line - 1)..lines.len() {
-            let (opens, closes) = count_braces(&lines[i]);
-            depth += opens - closes;
-            if depth == 0 && (opens > 0 || closes > 0) {
-                close_line = Some(i + 1); // 1-origin
-                break;
-            }
-        }
-
-        Some((open_line, close_line.unwrap_or(lines.len())))
+        Some((open_line_1, close_line))
     }
 }
 
