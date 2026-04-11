@@ -10,10 +10,20 @@ pub struct Breakpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructMember {
+    pub name: String,
+    pub type_name: String,
+    pub value: String,
+    pub num_children: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
     pub value: String,
     pub type_name: String,
+    /// 構造体型変数のメンバ一覧（-var-list-children で取得、非構造体は None）
+    pub members: Option<Vec<StructMember>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

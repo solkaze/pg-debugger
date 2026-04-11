@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use super::{Breakpoint, DebuggerState, Variable};
+use super::{Breakpoint, DebuggerState, StructMember, Variable};
 
 /// GDB から通知されるイベント
 #[derive(Debug, Clone)]
@@ -22,6 +22,8 @@ pub enum GdbEvent {
     VariablesUpdated(Vec<Variable>),
     /// 配列変数の値が取得できた（-data-evaluate-expression の結果）
     ArrayValue { name: String, value: String },
+    /// 構造体メンバの型付き情報が取得できた（-var-list-children の結果）
+    StructMembers { var_name: String, members: Vec<StructMember> },
     /// ブレークポイントが設定された
     BreakpointSet(Breakpoint),
     /// ブレークポイントが削除された
@@ -52,8 +54,13 @@ pub struct GdbBackend {
     /// -data-evaluate-expression のトークン番号 → 変数名 のマッピング
     /// リーダータスクと共有するため Arc<Mutex<...>>
     pending_evals: Arc<Mutex<HashMap<u64, String>>>,
+    /// -var-create のトークン番号 → 元の変数名 のマッピング
+    pending_var_creates: Arc<Mutex<HashMap<u64, String>>>,
+    /// -var-list-children のトークン番号 → (GDB var 名, 元の変数名) のマッピング
+    pending_var_lists: Arc<Mutex<HashMap<u64, (String, String)>>>,
     /// 次に使うトークン番号（2 以上。1 は stack-list-variables 用）
-    next_token: Mutex<u64>,
+    /// リーダータスクと共有するため Arc<Mutex<...>>
+    next_token: Arc<Mutex<u64>>,
 }
 
 impl GdbBackend {
@@ -84,8 +91,20 @@ impl GdbBackend {
             Arc::new(Mutex::new(HashMap::new()));
         let pending_evals_reader = Arc::clone(&pending_evals);
 
+        let pending_var_creates: Arc<Mutex<HashMap<u64, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_var_creates_reader = Arc::clone(&pending_var_creates);
+
+        let pending_var_lists: Arc<Mutex<HashMap<u64, (String, String)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_var_lists_reader = Arc::clone(&pending_var_lists);
+
+        let next_token_arc: Arc<Mutex<u64>> = Arc::new(Mutex::new(2));
+        let next_token_reader = Arc::clone(&next_token_arc);
+
         // GDB stdout を非同期で読み続けるタスク
         let event_tx_reader = event_tx.clone();
+        let cmd_tx_reader = cmd_tx.clone();
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -93,7 +112,14 @@ impl GdbBackend {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
                         tracing::info!("gdb< {}", line);
-                        if let Some(event) = parse_gdb_line(&line, &pending_evals_reader) {
+                        if let Some(event) = parse_gdb_line(
+                            &line,
+                            &pending_evals_reader,
+                            &pending_var_creates_reader,
+                            &pending_var_lists_reader,
+                            &next_token_reader,
+                            &cmd_tx_reader,
+                        ) {
                             if event_tx_reader.send(event).await.is_err() {
                                 break;
                             }
@@ -168,7 +194,9 @@ impl GdbBackend {
             _slave_fd: pty.slave,
             pty_master_write: Mutex::new(pty_master_write),
             pending_evals,
-            next_token: Mutex::new(2),
+            pending_var_creates,
+            pending_var_lists,
+            next_token: next_token_arc,
         })
     }
 
@@ -239,6 +267,20 @@ impl GdbBackend {
         self.send_command("-stack-info-depth")
     }
 
+    /// 構造体変数のメンバ型情報を -var-create / -var-list-children で取得する
+    pub fn request_struct_members(&self, var_name: &str) -> Result<()> {
+        let token = {
+            let mut t = self.next_token.lock().unwrap();
+            *t += 1;
+            *t
+        };
+        {
+            let mut map = self.pending_var_creates.lock().unwrap();
+            map.insert(token, var_name.to_string());
+        }
+        self.send_command(&format!("{}-var-create - * {}", token, var_name))
+    }
+
     /// 配列型変数の値を -data-evaluate-expression で個別取得する
     pub fn request_array_value(&self, var_name: &str) -> Result<()> {
         let token = {
@@ -282,7 +324,14 @@ impl GdbBackend {
 }
 
 /// GDB/MI の 1 行出力を解析し、対応するイベントを返す
-fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Option<GdbEvent> {
+fn parse_gdb_line(
+    line: &str,
+    pending_evals: &Mutex<HashMap<u64, String>>,
+    pending_var_creates: &Mutex<HashMap<u64, String>>,
+    pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    next_token: &Arc<Mutex<u64>>,
+    cmd_tx: &mpsc::Sender<String>,
+) -> Option<GdbEvent> {
     if line.starts_with("*stopped") {
         let file = extract_value(line, "fullname").map(PathBuf::from);
         let line_no = extract_value(line, "line").and_then(|s| s.parse::<u32>().ok());
@@ -314,6 +363,13 @@ fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Op
         extract_value(line, "depth")
             .and_then(|s| s.parse::<usize>().ok())
             .map(GdbEvent::StackDepth)
+    } else if line.contains(",children=[") {
+        // -var-list-children レスポンス
+        parse_var_list_children_response(line, pending_var_lists, cmd_tx)
+    } else if line.contains("^done,name=") && line.contains(",numchild=") {
+        // -var-create レスポンス（イベントは発行せず follow-up コマンドを送信）
+        handle_var_create_response(line, pending_var_creates, pending_var_lists, next_token, cmd_tx);
+        None
     } else if line.contains("^done,value=") {
         // -data-evaluate-expression レスポンス（配列値）
         parse_array_value_response(line, pending_evals)
@@ -323,6 +379,140 @@ fn parse_gdb_line(line: &str, pending_evals: &Mutex<HashMap<u64, String>>) -> Op
     } else {
         None
     }
+}
+
+/// `N^done,name="var1",numchild="K",...` をパースし、
+/// pending_var_creates からトークン→変数名を解決して -var-list-children を送信する
+fn handle_var_create_response(
+    line: &str,
+    pending_var_creates: &Mutex<HashMap<u64, String>>,
+    pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    next_token: &Arc<Mutex<u64>>,
+    cmd_tx: &mpsc::Sender<String>,
+) {
+    let Some(caret) = line.find('^') else { return };
+    let Ok(token) = line[..caret].parse::<u64>() else { return };
+
+    let orig_var_name = {
+        let mut map = pending_var_creates.lock().unwrap();
+        match map.remove(&token) {
+            Some(v) => v,
+            None => return, // このトークンは pending_var_creates にない
+        }
+    };
+
+    let gdb_var_name = match extract_value(line, "name") {
+        Some(n) => n,
+        None => return,
+    };
+    let numchild: usize = extract_value(line, "numchild")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    if numchild == 0 {
+        // 子なし → var オブジェクトを削除して終了
+        let _ = cmd_tx.try_send(format!("-var-delete {}", gdb_var_name));
+        return;
+    }
+
+    // var-list-children 用の新しいトークンを割り当てる
+    let list_token = {
+        let mut t = next_token.lock().unwrap();
+        *t += 1;
+        *t
+    };
+    {
+        let mut map = pending_var_lists.lock().unwrap();
+        map.insert(list_token, (gdb_var_name.clone(), orig_var_name));
+    }
+    let _ = cmd_tx.try_send(format!(
+        "{}-var-list-children --all-values {}",
+        list_token, gdb_var_name
+    ));
+}
+
+/// `M^done,numchild="K",children=[child={...},...]` をパースして StructMembers を返す
+fn parse_var_list_children_response(
+    line: &str,
+    pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    cmd_tx: &mpsc::Sender<String>,
+) -> Option<GdbEvent> {
+    let caret = line.find('^')?;
+    let token: u64 = line[..caret].parse().ok()?;
+
+    let (gdb_var_name, orig_var_name) = {
+        let mut map = pending_var_lists.lock().unwrap();
+        map.remove(&token)?
+    };
+
+    let members = parse_children(line).unwrap_or_default();
+
+    // var オブジェクトを削除する
+    let _ = cmd_tx.try_send(format!("-var-delete {}", gdb_var_name));
+
+    tracing::info!(
+        "var-list-children応答: {} → {} メンバ",
+        orig_var_name,
+        members.len()
+    );
+    Some(GdbEvent::StructMembers { var_name: orig_var_name, members })
+}
+
+/// `children=[child={name="v.x",exp="x",numchild="0",value="10",type="int"},...` をパースする
+fn parse_children(line: &str) -> Option<Vec<StructMember>> {
+    let start = line.find("children=[")? + "children=[".len();
+    let list = &line[start..];
+
+    let mut members = Vec::new();
+    let mut remaining = list;
+
+    loop {
+        let brace_open = match remaining.find('{') {
+            Some(i) => i,
+            None => break,
+        };
+        remaining = &remaining[brace_open + 1..];
+
+        // 対応する `}` を深さを追って探す
+        let mut depth = 1usize;
+        let mut end = None;
+        let mut chars = remaining.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => { chars.next(); }
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = match end {
+            Some(e) => e,
+            None => break,
+        };
+
+        let block = &remaining[..end];
+        remaining = &remaining[end + 1..];
+
+        // exp フィールドがメンバ名（"var1.x" でなく "x" の部分）
+        let name = extract_quoted_value(block, "exp").unwrap_or_default();
+        let type_name = extract_quoted_value(block, "type").unwrap_or_default();
+        let value = extract_quoted_value(block, "value").unwrap_or_default();
+        let num_children: usize = extract_quoted_value(block, "numchild")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        if !name.is_empty() {
+            members.push(StructMember { name, type_name, value, num_children });
+        }
+    }
+
+    Some(members)
 }
 
 /// `N^done,value="..."` をパースし、pending_evals からトークン→変数名を解決して ArrayValue を返す
@@ -555,7 +745,7 @@ fn parse_variables_response(line: &str) -> Option<Vec<Variable>> {
         let value = extract_quoted_value(block, "value").unwrap_or("...".to_string());
 
         if !name.is_empty() {
-            vars.push(Variable { name, value, type_name });
+            vars.push(Variable { name, value, type_name, members: None });
         }
     }
 

@@ -17,10 +17,12 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default()
     };
 
-    let title = match &app.current_file {
-        Some(p) => format!("Source – {}", p.display()),
-        None => "Source".to_string(),
+    let raw_title = if app.frame_stack.is_empty() {
+        format!("Source – {}", app.call_stack_title())
+    } else {
+        format!("▶ {}", app.call_stack_title())
     };
+    let title = truncate_title(&raw_title, area.width as usize);
 
     let block = Block::default()
         .title(title)
@@ -168,11 +170,8 @@ pub fn render_frozen(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
-    let file_name = frame.file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?");
-    let title = format!("呼び出し元 – {}", file_name);
+    let raw_title = format!("呼び出し元 ▶ {}", app.call_stack_title_frozen());
+    let title = truncate_title(&raw_title, area.width as usize);
 
     let block = Block::default()
         .title(title)
@@ -243,6 +242,28 @@ pub fn render_frozen(f: &mut Frame, app: &App, area: Rect) {
 
     let widget = Paragraph::new(lines).block(block);
     f.render_widget(widget, area);
+}
+
+/// タイトルが幅を超える場合、先頭を省略して "..." を付けて返す。
+/// area_width はボーダー込みの幅（内側は -2）。
+fn truncate_title(title: &str, area_width: usize) -> String {
+    // ボーダー2文字 + 左右の空白各1文字 = 4文字分を引く
+    let max = area_width.saturating_sub(4);
+    if title.chars().count() <= max {
+        title.to_string()
+    } else {
+        // "..." の3文字分を引いた長さ分を末尾から取る
+        let keep = max.saturating_sub(3);
+        let chars: Vec<char> = title.chars().collect();
+        let start = chars.len().saturating_sub(keep);
+        // → の区切りの途中で切れないよう、先頭から次の " → " 以降を使う
+        let suffix: String = chars[start..].iter().collect();
+        if let Some(pos) = suffix.find(" → ") {
+            format!("...{}", &suffix[pos..])
+        } else {
+            format!("...{}", suffix)
+        }
+    }
 }
 
 /// source_lines から func_name の関数スコープを計算して返す（1-origin）。

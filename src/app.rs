@@ -108,6 +108,26 @@ pub struct App {
 }
 
 
+/// 型名が構造体型かどうかを判定する。
+/// 配列型・ポインタ型・基本型は false を返す。
+fn is_struct_type(type_name: &str) -> bool {
+    let base_types = [
+        "int", "long", "short", "float", "double",
+        "char", "bool", "_Bool", "size_t",
+        "unsigned", "signed", "void",
+    ];
+    let t = type_name.trim();
+    // 配列・ポインタは除外
+    if t.contains('[') || t.contains('*') {
+        return false;
+    }
+    // 基本型は除外（完全一致 or "unsigned int" などのプレフィックス一致）
+    if base_types.iter().any(|b| t == *b || t.starts_with(&format!("{} ", b))) {
+        return false;
+    }
+    true
+}
+
 impl App {
     /// アプリケーションを初期化する。
     /// executable が Some の場合は GDB を起動して main の先頭で停止させる。
@@ -382,8 +402,7 @@ impl App {
         while let Some(event) = gdb.try_recv_event() {
             match event {
                 GdbEvent::Stopped { file, line, func } => {
-                    self.current_func = func;
-                    // 現在の表示状態を呼び出し元フレームとして保存する（StackDepth で使用）
+                    // prev_stop_frameはcurrent_funcを更新する前に保存する（呼び出し元の関数名を保持するため）
                     if self.current_file.is_some() {
                         self.prev_stop_frame = Some(FrameView {
                             file: self.current_file.clone().unwrap_or_default(),
@@ -393,6 +412,7 @@ impl App {
                             func_name: self.current_func.clone(),
                         });
                     }
+                    self.current_func = func;
                     self.program_running = false;
                     self.status_message = format!("{}: {}行目", file.display(), line);
                     self.current_line = Some(line);
@@ -431,11 +451,15 @@ impl App {
                 }
                 GdbEvent::VariablesUpdated(vars) => {
                     tracing::info!("simple-values受信: {:?}", vars);
-                    // 配列型変数・char*型変数の name を収集してから self.variables を更新する
-                    // char* は simple-values の値が不正確な場合があるため -data-evaluate-expression で再取得する
+                    // 配列型・char*型・構造体型変数の name を収集してから self.variables を更新する
+                    // これらは simple-values の値が不正確または空なので -data-evaluate-expression で再取得する
                     let eval_names: Vec<String> = vars
                         .iter()
-                        .filter(|v| v.type_name.contains('[') || v.type_name.contains("char *"))
+                        .filter(|v| {
+                            v.type_name.contains('[')
+                                || v.type_name.contains("char *")
+                                || is_struct_type(&v.type_name)
+                        })
                         .map(|v| v.name.clone())
                         .collect();
 
@@ -465,12 +489,20 @@ impl App {
                             tracing::error!("評価値要求エラー: {}", e);
                         }
                     }
+                    // 構造体型変数のメンバ型情報を -var-create で取得する
+                    for var in &self.variables {
+                        if is_struct_type(&var.type_name) {
+                            if let Err(e) = gdb.request_struct_members(&var.name) {
+                                tracing::error!("構造体メンバ要求エラー: {}", e);
+                            }
+                        }
+                    }
                 }
                 GdbEvent::ArrayValue { name, value } => {
-                    tracing::info!("配列値受信: {} = {}", name, value);
+                    tracing::info!("evaluate-expression受信: {} = {:?}", name, value);
                     if let Some(var) = self.variables.iter_mut().find(|v| v.name == name) {
-                        tracing::debug!(
-                            "ArrayValue更新: name={} type={} old={:?} new={:?}",
+                        tracing::info!(
+                            "evaluate-expression更新: name={} type={:?} old={:?} new={:?}",
                             name, var.type_name, var.value, value
                         );
                         // raw値をそのまま保持する。デコードは var_view.rs で一度だけ行う。
@@ -482,6 +514,16 @@ impl App {
                     }
                     if self.pending_array_count == 0 {
                         self.display_variables = self.variables.clone();
+                    }
+                }
+                GdbEvent::StructMembers { var_name, members } => {
+                    tracing::info!("StructMembers受信: {} ({} メンバ)", var_name, members.len());
+                    // self.variables と display_variables 両方を更新する
+                    if let Some(var) = self.variables.iter_mut().find(|v| v.name == var_name) {
+                        var.members = Some(members.clone());
+                    }
+                    if let Some(var) = self.display_variables.iter_mut().find(|v| v.name == var_name) {
+                        var.members = Some(members);
                     }
                 }
                 GdbEvent::ProgramOutput(text) => {
@@ -741,7 +783,9 @@ impl App {
         );
         if let Some((var_idx, true)) = cursor_info {
             let var = &self.display_variables[var_idx];
-            if var.type_name.contains('[') && var.value.trim().starts_with('{') {
+            let is_expandable = (var.type_name.contains('[') && var.value.trim().starts_with('{'))
+                || is_struct_value(&var.value);
+            if is_expandable {
                 let name = var.name.clone();
                 if self.collapsed_vars.contains(&name) {
                     self.collapsed_vars.remove(&name);
@@ -760,15 +804,20 @@ impl App {
                 return Some((i, true));
             }
             row += 1;
-            if var.type_name.contains('[')
-                && var.value.trim().starts_with('{')
-                && !self.collapsed_vars.contains(&var.name)
-            {
-                let count = count_array_elements(&var.value);
-                if self.var_cursor < row + count {
-                    return Some((i, false));
+            if !self.collapsed_vars.contains(&var.name) {
+                let child_count = if is_struct_value(&var.value) {
+                    count_struct_members(&var.value)
+                } else if var.type_name.contains('[') && var.value.trim().starts_with('{') {
+                    count_array_elements(&var.value)
+                } else {
+                    0
+                };
+                if child_count > 0 {
+                    if self.var_cursor < row + child_count {
+                        return Some((i, false));
+                    }
+                    row += child_count;
                 }
-                row += count;
             }
         }
         None
@@ -779,11 +828,12 @@ impl App {
         let mut count = 0;
         for var in &self.display_variables {
             count += 1;
-            if var.type_name.contains('[')
-                && var.value.trim().starts_with('{')
-                && !self.collapsed_vars.contains(&var.name)
-            {
-                count += count_array_elements(&var.value);
+            if !self.collapsed_vars.contains(&var.name) {
+                if is_struct_value(&var.value) {
+                    count += count_struct_members(&var.value);
+                } else if var.type_name.contains('[') && var.value.trim().starts_with('{') {
+                    count += count_array_elements(&var.value);
+                }
             }
         }
         count
@@ -1064,6 +1114,39 @@ impl App {
 
         Some((open_line_1, close_line))
     }
+
+    /// タイトルバー用のコールスタック文字列を返す。
+    /// frame_stack が空なら現在のファイル名のみ、そうでなければ "func1 → func2 → ..." の形式。
+    pub fn call_stack_title(&self) -> String {
+        if self.frame_stack.is_empty() {
+            self.current_file
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("(no file)")
+                .to_string()
+        } else {
+            let mut parts: Vec<String> = self.frame_stack
+                .iter()
+                .map(|f| f.func_name.clone())
+                .collect();
+            parts.push(self.current_func.clone());
+            parts.join(" → ")
+        }
+    }
+
+    /// 左画面（呼び出し元）用のコールスタック文字列を返す。
+    /// frame_stack の末尾を除いた関数名を "func1 → func2" の形式で返す。
+    pub fn call_stack_title_frozen(&self) -> String {
+        if self.frame_stack.is_empty() {
+            return String::new();
+        }
+        let parts: Vec<String> = self.frame_stack
+            .iter()
+            .map(|f| f.func_name.clone())
+            .collect();
+        parts.join(" → ")
+    }
 }
 
 /// GDB の "{v1, v2, ...}" 形式から要素数を返す
@@ -1079,4 +1162,28 @@ fn count_array_elements(value: &str) -> usize {
     } else {
         0
     }
+}
+
+/// 値が構造体形式かどうか（"{" で始まり "name = value" パターンを含む）
+fn is_struct_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    trimmed.contains(" = ")
+}
+
+/// 構造体値のメンバ数を返す（depth=1 のカンマ数 + 1）
+fn count_struct_members(value: &str) -> usize {
+    let mut depth = 0i32;
+    let mut count = 1usize;
+    for ch in value.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 1 => count += 1,
+            _ => {}
+        }
+    }
+    count
 }

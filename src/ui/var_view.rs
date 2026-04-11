@@ -107,6 +107,67 @@ fn is_expandable_array(type_name: &str, value: &str) -> bool {
     type_name.contains('[') && value.trim().starts_with('{')
 }
 
+/// 値が構造体形式かどうか（"{" で始まり、"name = value" パターンを含む）
+fn is_struct_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    trimmed.contains(" = ")
+}
+
+/// "{x = 10, y = 20}" → [("x", "10"), ("y", "20")]
+/// ネストも考慮: "{top_left = {x = 0, y = 0}, width = 100}"
+///   → [("top_left", "{x = 0, y = 0}"), ("width", "100")]
+fn parse_struct_members(value: &str) -> Vec<(String, String)> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(trimmed);
+
+    let mut members = Vec::new();
+    let mut depth = 0i32;
+    let mut current = String::new();
+
+    for ch in inner.chars() {
+        match ch {
+            '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            '}' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let part = current.trim().to_string();
+                if let Some((name, val)) = parse_member_pair(&part) {
+                    members.push((name, val));
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    // 最後のメンバ
+    let part = current.trim().to_string();
+    if let Some((name, val)) = parse_member_pair(&part) {
+        members.push((name, val));
+    }
+
+    members
+}
+
+/// "x = 10" → ("x", "10")
+/// "top_left = {x = 0, y = 0}" → ("top_left", "{x = 0, y = 0}")
+fn parse_member_pair(s: &str) -> Option<(String, String)> {
+    let eq_pos = s.find(" = ")?;
+    let name = s[..eq_pos].trim().to_string();
+    let val = s[eq_pos + 3..].trim().to_string();
+    Some((name, val))
+}
+
 /// char配列の {N, N, N, ...} 数値リスト形式をUTF-8文字列に変換する。
 /// 0バイトで終端し、結果を "\"...\"" 形式で返す。
 fn decode_numeric_char_array(value: &str) -> String {
@@ -210,7 +271,8 @@ fn build_rows<'a>(
         let is_changed = changed.contains(var.name.as_str());
         let base_fg = if is_changed { Color::Green } else { Color::Reset };
 
-        let expandable = is_expandable_array(&var.type_name, &var.value);
+        let expandable = is_expandable_array(&var.type_name, &var.value)
+            || is_struct_value(&var.value);
         tracing::debug!(
             "var={} type={} value={:?} expandable={}",
             var.name, var.type_name, var.value, expandable
@@ -252,29 +314,99 @@ fn build_rows<'a>(
 
             // 展開時: 要素を1行ずつ表示
             if !collapsed {
-                let elements = parse_array_elements(&var.value);
-                let is_char = var.type_name.starts_with("char [");
-                let is_float = var.type_name.starts_with("double [") || var.type_name.starts_with("float [");
+                if is_struct_value(&var.value) {
+                    // 構造体展開: ".member  type  value" 形式
+                    if let Some(ref typed_members) = var.members {
+                        // -var-list-children で型情報が取得できている場合
+                        for member in typed_members {
+                            let elem_cursor = focused && render_row_idx == app.var_cursor;
+                            let elem_style = make_style(base_fg, elem_cursor);
 
-                for (i, elem) in elements.iter().enumerate() {
-                    let elem_cursor = focused && render_row_idx == app.var_cursor;
-                    let elem_style = make_style(base_fg, elem_cursor);
+                            let display_val = if member.num_children > 0 {
+                                // ネストした構造体
+                                truncate_value(&member.value)
+                            } else if member.value.starts_with('"')
+                                || member.value.starts_with("\\\"")
+                            {
+                                format!("\"{}\"", decode_gdb_octal_string(&member.value))
+                            } else if member.value.parse::<f64>().is_ok()
+                                && (member.type_name.contains("double")
+                                    || member.type_name.contains("float"))
+                            {
+                                format_float_value(&member.value)
+                            } else {
+                                member.value.clone()
+                            };
+                            let display_value =
+                                skip_display_width(&display_val, app.var_col_scroll).to_owned();
 
-                    let raw_value = if is_char {
-                        format_char_element(elem)
-                    } else if is_float {
-                        format_float_value(elem)
+                            rows.push(Row::new([
+                                Cell::from(format!("  .{}", member.name)).style(elem_style),
+                                Cell::from(member.type_name.clone()).style(elem_style),
+                                Cell::from(display_value).style(elem_style),
+                            ]));
+                            render_row_idx += 1;
+                        }
                     } else {
-                        elem.clone()
-                    };
-                    let display_value = skip_display_width(&raw_value, app.var_col_scroll).to_owned();
+                        // フォールバック: parse_struct_members() で型なし表示
+                        let members = parse_struct_members(&var.value);
+                        for (member_name, member_val) in &members {
+                            let elem_cursor = focused && render_row_idx == app.var_cursor;
+                            let elem_style = make_style(base_fg, elem_cursor);
 
-                    rows.push(Row::new([
-                        Cell::from(format!("  [{i}]")).style(elem_style),
-                        Cell::from("").style(elem_style),
-                        Cell::from(display_value).style(elem_style),
-                    ]));
-                    render_row_idx += 1;
+                            let display_val = if is_struct_value(member_val) {
+                                truncate_value(member_val)
+                            } else if member_val.starts_with('"')
+                                || member_val.starts_with("\\\"")
+                            {
+                                format!("\"{}\"", decode_gdb_octal_string(member_val))
+                            } else if member_val.parse::<f64>().is_ok()
+                                && (var.type_name.contains("double")
+                                    || var.type_name.contains("float"))
+                            {
+                                format_float_value(member_val)
+                            } else {
+                                member_val.clone()
+                            };
+                            let display_value =
+                                skip_display_width(&display_val, app.var_col_scroll).to_owned();
+
+                            rows.push(Row::new([
+                                Cell::from(format!("  .{}", member_name)).style(elem_style),
+                                Cell::from("").style(elem_style),
+                                Cell::from(display_value).style(elem_style),
+                            ]));
+                            render_row_idx += 1;
+                        }
+                    }
+                } else {
+                    // 配列展開: "[i]  value" 形式
+                    let elements = parse_array_elements(&var.value);
+                    let is_char = var.type_name.starts_with("char [");
+                    let is_float = var.type_name.starts_with("double [")
+                        || var.type_name.starts_with("float [");
+
+                    for (i, elem) in elements.iter().enumerate() {
+                        let elem_cursor = focused && render_row_idx == app.var_cursor;
+                        let elem_style = make_style(base_fg, elem_cursor);
+
+                        let raw_value = if is_char {
+                            format_char_element(elem)
+                        } else if is_float {
+                            format_float_value(elem)
+                        } else {
+                            elem.clone()
+                        };
+                        let display_value =
+                            skip_display_width(&raw_value, app.var_col_scroll).to_owned();
+
+                        rows.push(Row::new([
+                            Cell::from(format!("  [{i}]")).style(elem_style),
+                            Cell::from("").style(elem_style),
+                            Cell::from(display_value).style(elem_style),
+                        ]));
+                        render_row_idx += 1;
+                    }
                 }
             }
         } else {
