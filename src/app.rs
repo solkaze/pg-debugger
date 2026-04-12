@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::compiler;
 use crate::debugger::gdb::{GdbBackend, GdbEvent};
-use crate::debugger::{Breakpoint, Variable};
+use crate::debugger::{Breakpoint, StructMember, Variable};
 
 /// ステップイン時に保存する呼び出し元フレームの表示状態
 pub struct FrameView {
@@ -107,6 +107,27 @@ pub struct App {
     pub gray_out_enabled: bool,
 }
 
+
+/// StructMember ツリーを "a.b.c" 形式のパスで再帰的に探し、見つかったメンバの value を更新する。
+fn update_member_value(members: &mut Vec<StructMember>, path: &str, value: &str) {
+    let (head, tail) = match path.find('.') {
+        Some(pos) => (&path[..pos], Some(&path[pos + 1..])),
+        None => (path, None),
+    };
+    for member in members.iter_mut() {
+        if member.name == head {
+            match tail {
+                None => {
+                    member.value = value.to_string();
+                }
+                Some(rest) => {
+                    update_member_value(&mut member.children, rest, value);
+                }
+            }
+            return;
+        }
+    }
+}
 
 /// 型名が構造体型かどうかを判定する。
 /// 配列型・ポインタ型・基本型は false を返す。
@@ -526,6 +547,20 @@ impl App {
                         var.members = Some(members);
                     }
                 }
+                GdbEvent::CharArrayValue { var_name, member_name, value } => {
+                    tracing::info!("CharArrayValue受信: {}.{} = {:?}", var_name, member_name, value);
+                    // display_variables と variables 両方の該当メンバを更新する
+                    if let Some(var) = self.display_variables.iter_mut().find(|v| v.name == var_name) {
+                        if let Some(members) = &mut var.members {
+                            update_member_value(members, &member_name, &value);
+                        }
+                    }
+                    if let Some(var) = self.variables.iter_mut().find(|v| v.name == var_name) {
+                        if let Some(members) = &mut var.members {
+                            update_member_value(members, &member_name, &value);
+                        }
+                    }
+                }
                 GdbEvent::ProgramOutput(text) => {
                     for ch in text.chars() {
                         if ch == '\n' {
@@ -775,46 +810,71 @@ impl App {
 
     /// カーソル位置の配列をトグル（展開/折りたたみ）する
     fn toggle_var_collapse(&mut self) {
-        let cursor_info = self.var_cursor_var_index();
-        // デバッグ: Enter を押したときカーソル状態をステータスバーに表示する
-        self.status_message = format!(
-            "cursor={}, var_cursor_var_index={:?}",
-            self.var_cursor, cursor_info
-        );
-        if let Some((var_idx, true)) = cursor_info {
-            let var = &self.display_variables[var_idx];
-            let is_expandable = (var.type_name.contains('[') && var.value.trim().starts_with('{'))
-                || is_struct_value(&var.value);
-            if is_expandable {
-                let name = var.name.clone();
-                if self.collapsed_vars.contains(&name) {
-                    self.collapsed_vars.remove(&name);
-                } else {
-                    self.collapsed_vars.insert(name);
-                }
-            }
+        let Some(toggle_key) = self.cursor_collapse_key() else { return };
+        self.status_message = format!("cursor={}, toggle={:?}", self.var_cursor, toggle_key);
+        if self.collapsed_vars.contains(&toggle_key) {
+            self.collapsed_vars.remove(&toggle_key);
+        } else {
+            self.collapsed_vars.insert(toggle_key);
         }
     }
 
-    /// カーソル行がどの変数のどの行かを返す（var_index, is_header）
-    pub fn var_cursor_var_index(&self) -> Option<(usize, bool)> {
+    /// カーソル行のトグルキーを返す。展開不可の行なら None。
+    fn cursor_collapse_key(&self) -> Option<String> {
+        let (var_idx, member_path) = self.var_cursor_var_index()?;
+        let var = &self.display_variables[var_idx];
+        if let Some(path) = member_path {
+            // メンバ行：typed members ツリーの中でパスに対応するノードを探す
+            if let Some(ref members) = var.members {
+                if find_member_at_path(members, &path, &var.name)
+                    .map(|m| !m.children.is_empty())
+                    .unwrap_or(false)
+                {
+                    return Some(path);
+                }
+            }
+            None
+        } else {
+            // ヘッダ行
+            let is_expandable = var.members.is_some()
+                || (var.type_name.contains('[') && var.value.trim().starts_with('{'))
+                || is_struct_value(&var.value);
+            if is_expandable { Some(var.name.clone()) } else { None }
+        }
+    }
+
+    /// カーソル行がどの変数のどの行かを返す（var_index, member_path）
+    /// member_path: None = ヘッダ行、Some(path) = メンバ行のパス
+    pub fn var_cursor_var_index(&self) -> Option<(usize, Option<String>)> {
         let mut row = 0usize;
         for (i, var) in self.display_variables.iter().enumerate() {
             if row == self.var_cursor {
-                return Some((i, true));
+                return Some((i, None));
             }
             row += 1;
             if !self.collapsed_vars.contains(&var.name) {
-                let child_count = if is_struct_value(&var.value) {
-                    count_struct_members(&var.value)
-                } else if var.type_name.contains('[') && var.value.trim().starts_with('{') {
-                    count_array_elements(&var.value)
-                } else {
-                    0
-                };
-                if child_count > 0 {
+                if let Some(ref members) = var.members {
+                    let result = find_cursor_in_members(
+                        members,
+                        &self.collapsed_vars,
+                        &var.name,
+                        &mut row,
+                        self.var_cursor,
+                        i,
+                    );
+                    if result.is_some() {
+                        return result;
+                    }
+                } else if is_struct_value(&var.value) {
+                    let child_count = count_struct_members(&var.value);
                     if self.var_cursor < row + child_count {
-                        return Some((i, false));
+                        return Some((i, None));
+                    }
+                    row += child_count;
+                } else if var.type_name.contains('[') && var.value.trim().starts_with('{') {
+                    let child_count = count_array_elements(&var.value);
+                    if self.var_cursor < row + child_count {
+                        return Some((i, None));
                     }
                     row += child_count;
                 }
@@ -829,7 +889,9 @@ impl App {
         for var in &self.display_variables {
             count += 1;
             if !self.collapsed_vars.contains(&var.name) {
-                if is_struct_value(&var.value) {
+                if let Some(ref members) = var.members {
+                    count += count_member_rows(members, &self.collapsed_vars, &var.name);
+                } else if is_struct_value(&var.value) {
                     count += count_struct_members(&var.value);
                 } else if var.type_name.contains('[') && var.value.trim().starts_with('{') {
                     count += count_array_elements(&var.value);
@@ -1147,6 +1209,73 @@ impl App {
             .collect();
         parts.join(" → ")
     }
+}
+
+/// typed members ツリーを再帰的に行数カウントする
+fn count_member_rows(
+    members: &[StructMember],
+    collapsed_vars: &HashSet<String>,
+    path: &str,
+) -> usize {
+    let mut count = 0;
+    for member in members {
+        count += 1;
+        let member_path = format!("{}.{}", path, member.name);
+        if !member.children.is_empty() && !collapsed_vars.contains(&member_path) {
+            count += count_member_rows(&member.children, collapsed_vars, &member_path);
+        }
+    }
+    count
+}
+
+/// typed members ツリーの中でカーソル行を再帰的に探す
+fn find_cursor_in_members(
+    members: &[StructMember],
+    collapsed_vars: &HashSet<String>,
+    path: &str,
+    row: &mut usize,
+    cursor: usize,
+    var_idx: usize,
+) -> Option<(usize, Option<String>)> {
+    for member in members {
+        let member_path = format!("{}.{}", path, member.name);
+        if *row == cursor {
+            return Some((var_idx, Some(member_path)));
+        }
+        *row += 1;
+        if !member.children.is_empty() && !collapsed_vars.contains(&member_path) {
+            let result = find_cursor_in_members(
+                &member.children,
+                collapsed_vars,
+                &member_path,
+                row,
+                cursor,
+                var_idx,
+            );
+            if result.is_some() {
+                return result;
+            }
+        }
+    }
+    None
+}
+
+/// typed members ツリーの中でパスに対応するメンバを探す
+fn find_member_at_path<'a>(
+    members: &'a [StructMember],
+    full_path: &str,
+    current_prefix: &str,
+) -> Option<&'a StructMember> {
+    for member in members {
+        let member_path = format!("{}.{}", current_prefix, member.name);
+        if member_path == full_path {
+            return Some(member);
+        }
+        if full_path.starts_with(&format!("{}.", member_path)) {
+            return find_member_at_path(&member.children, full_path, &member_path);
+        }
+    }
+    None
 }
 
 /// GDB の "{v1, v2, ...}" 形式から要素数を返す

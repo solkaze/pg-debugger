@@ -14,7 +14,10 @@ pub struct StructMember {
     pub name: String,
     pub type_name: String,
     pub value: String,
-    pub num_children: usize,
+    /// GDB の varオブジェクト名（削除用）
+    pub var_obj_name: String,
+    /// 子メンバ（空なら葉ノード）
+    pub children: Vec<StructMember>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Panel};
+use crate::debugger::StructMember;
 use crate::gdb_utils::decode_gdb_octal_string;
 
 /// "{v1, v2, v3, ...}" → Vec<String>
@@ -189,6 +190,88 @@ fn decode_numeric_char_array(value: &str) -> String {
     }
 }
 
+/// typed members ツリーを再帰的に描画する
+#[allow(clippy::too_many_arguments)]
+fn build_member_rows(
+    members: &[StructMember],
+    collapsed_vars: &std::collections::HashSet<String>,
+    path: &str,
+    indent: usize,
+    cursor: usize,
+    render_row_idx: &mut usize,
+    focused: bool,
+    base_fg: Color,
+    var_col_scroll: usize,
+) -> Vec<Row<'static>> {
+    let mut rows = Vec::new();
+
+    for member in members {
+        let member_path = format!("{}.{}", path, member.name);
+        let is_cursor = focused && *render_row_idx == cursor;
+        let style = make_style(base_fg, is_cursor);
+
+        let indent_str = "  ".repeat(indent);
+        let has_children = !member.children.is_empty();
+        let is_collapsed = collapsed_vars.contains(&member_path);
+
+        let name_cell = if has_children {
+            let indicator = if is_collapsed { "▶" } else { "▼" };
+            format!("{}{} .{}", indent_str, indicator, member.name)
+        } else {
+            format!("{}  .{}", indent_str, member.name)
+        };
+
+        let raw_value = if has_children && is_collapsed {
+            // 折りたたみ時
+            if member.type_name.starts_with("char [") {
+                // char配列は文字列としてデコード
+                decode_gdb_octal_string(&member.value)
+            } else if member.type_name == "double" || member.type_name == "float" {
+                format_float_value(&member.value)
+            } else {
+                // 構造体等はそのまま省略表示
+                truncate_value(&member.value)
+            }
+        } else if has_children && !is_collapsed {
+            // 展開中はヘッダー行の値は空
+            String::new()
+        } else if member.type_name.starts_with("char [") {
+            // 葉ノードのchar配列もデコード
+            decode_gdb_octal_string(&member.value)
+        } else if member.type_name == "double" || member.type_name == "float" {
+            format_float_value(&member.value)
+        } else {
+            member.value.clone()
+        };
+
+        let display_value = skip_display_width(&raw_value, var_col_scroll).to_owned();
+
+        rows.push(Row::new([
+            Cell::from(name_cell).style(style),
+            Cell::from(member.type_name.clone()).style(style),
+            Cell::from(display_value).style(style),
+        ]));
+        *render_row_idx += 1;
+
+        if has_children && !is_collapsed {
+            let child_rows = build_member_rows(
+                &member.children,
+                collapsed_vars,
+                &member_path,
+                indent + 1,
+                cursor,
+                render_row_idx,
+                focused,
+                base_fg,
+                var_col_scroll,
+            );
+            rows.extend(child_rows);
+        }
+    }
+
+    rows
+}
+
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Vars;
     let border_style = if focused {
@@ -272,7 +355,8 @@ fn build_rows<'a>(
         let base_fg = if is_changed { Color::Green } else { Color::Reset };
 
         let expandable = is_expandable_array(&var.type_name, &var.value)
-            || is_struct_value(&var.value);
+            || is_struct_value(&var.value)
+            || var.members.is_some();
         tracing::debug!(
             "var={} type={} value={:?} expandable={}",
             var.name, var.type_name, var.value, expandable
@@ -314,39 +398,22 @@ fn build_rows<'a>(
 
             // 展開時: 要素を1行ずつ表示
             if !collapsed {
-                if is_struct_value(&var.value) {
-                    // 構造体展開: ".member  type  value" 形式
-                    if let Some(ref typed_members) = var.members {
-                        // -var-list-children で型情報が取得できている場合
-                        for member in typed_members {
-                            let elem_cursor = focused && render_row_idx == app.var_cursor;
-                            let elem_style = make_style(base_fg, elem_cursor);
-
-                            let display_val = if member.num_children > 0 {
-                                // ネストした構造体
-                                truncate_value(&member.value)
-                            } else if member.value.starts_with('"')
-                                || member.value.starts_with("\\\"")
-                            {
-                                format!("\"{}\"", decode_gdb_octal_string(&member.value))
-                            } else if member.value.parse::<f64>().is_ok()
-                                && (member.type_name.contains("double")
-                                    || member.type_name.contains("float"))
-                            {
-                                format_float_value(&member.value)
-                            } else {
-                                member.value.clone()
-                            };
-                            let display_value =
-                                skip_display_width(&display_val, app.var_col_scroll).to_owned();
-
-                            rows.push(Row::new([
-                                Cell::from(format!("  .{}", member.name)).style(elem_style),
-                                Cell::from(member.type_name.clone()).style(elem_style),
-                                Cell::from(display_value).style(elem_style),
-                            ]));
-                            render_row_idx += 1;
-                        }
+                if var.members.is_some() || is_struct_value(&var.value) {
+                    // 構造体展開
+                    if let Some(ref members) = var.members {
+                        // typed members ツリーで再帰描画
+                        let member_rows = build_member_rows(
+                            members,
+                            &app.collapsed_vars,
+                            &var.name,
+                            1,
+                            app.var_cursor,
+                            &mut render_row_idx,
+                            focused,
+                            base_fg,
+                            app.var_col_scroll,
+                        );
+                        rows.extend(member_rows);
                     } else {
                         // フォールバック: parse_struct_members() で型なし表示
                         let members = parse_struct_members(&var.value);

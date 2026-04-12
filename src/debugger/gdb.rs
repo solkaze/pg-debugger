@@ -11,6 +11,34 @@ use tracing::{debug, error};
 
 use super::{Breakpoint, DebuggerState, StructMember, Variable};
 
+/// -var-list-children 応答の1子要素（内部処理用）
+struct RawChild {
+    gdb_var_name: String, // e.g. "var1.top_left"
+    exp: String,          // e.g. "top_left"
+    type_name: String,
+    value: String,
+    num_children: usize,
+}
+
+/// ノードデータ（ツリー構築中に保持）
+struct NodeData {
+    exp: String,
+    type_name: String,
+    value: String,
+}
+
+/// 1つの最上位変数に対するツリー構築状態
+struct PendingVarBuild {
+    /// 元の変数名（例: "r"）
+    original_var: String,
+    /// まだ応答待ちの -var-list-children 数
+    outstanding: usize,
+    /// GDB var名 → ノードデータ
+    nodes: HashMap<String, NodeData>,
+    /// 親 GDB var名 → 子 GDB var名の順序付きリスト
+    children: HashMap<String, Vec<String>>,
+}
+
 /// GDB から通知されるイベント
 #[derive(Debug, Clone)]
 pub enum GdbEvent {
@@ -22,6 +50,8 @@ pub enum GdbEvent {
     VariablesUpdated(Vec<Variable>),
     /// 配列変数の値が取得できた（-data-evaluate-expression の結果）
     ArrayValue { name: String, value: String },
+    /// 構造体メンバの char 配列値が取得できた（-data-evaluate-expression の結果）
+    CharArrayValue { var_name: String, member_name: String, value: String },
     /// 構造体メンバの型付き情報が取得できた（-var-list-children の結果）
     StructMembers { var_name: String, members: Vec<StructMember> },
     /// ブレークポイントが設定された
@@ -54,10 +84,14 @@ pub struct GdbBackend {
     /// -data-evaluate-expression のトークン番号 → 変数名 のマッピング
     /// リーダータスクと共有するため Arc<Mutex<...>>
     pending_evals: Arc<Mutex<HashMap<u64, String>>>,
+    /// char 配列メンバ用 -data-evaluate-expression のトークン → (ルート変数名, メンバパス) のマッピング
+    pending_char_evals: Arc<Mutex<HashMap<u64, (String, String)>>>,
     /// -var-create のトークン番号 → 元の変数名 のマッピング
     pending_var_creates: Arc<Mutex<HashMap<u64, String>>>,
-    /// -var-list-children のトークン番号 → (GDB var 名, 元の変数名) のマッピング
+    /// -var-list-children のトークン番号 → (root GDB var名, 列挙対象 GDB var名) のマッピング
     pending_var_lists: Arc<Mutex<HashMap<u64, (String, String)>>>,
+    /// root GDB var名 → ツリー構築状態
+    pending_var_builds: Arc<Mutex<HashMap<String, PendingVarBuild>>>,
     /// 次に使うトークン番号（2 以上。1 は stack-list-variables 用）
     /// リーダータスクと共有するため Arc<Mutex<...>>
     next_token: Arc<Mutex<u64>>,
@@ -91,6 +125,10 @@ impl GdbBackend {
             Arc::new(Mutex::new(HashMap::new()));
         let pending_evals_reader = Arc::clone(&pending_evals);
 
+        let pending_char_evals: Arc<Mutex<HashMap<u64, (String, String)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_char_evals_reader = Arc::clone(&pending_char_evals);
+
         let pending_var_creates: Arc<Mutex<HashMap<u64, String>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_var_creates_reader = Arc::clone(&pending_var_creates);
@@ -98,6 +136,10 @@ impl GdbBackend {
         let pending_var_lists: Arc<Mutex<HashMap<u64, (String, String)>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_var_lists_reader = Arc::clone(&pending_var_lists);
+
+        let pending_var_builds: Arc<Mutex<HashMap<String, PendingVarBuild>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_var_builds_reader = Arc::clone(&pending_var_builds);
 
         let next_token_arc: Arc<Mutex<u64>> = Arc::new(Mutex::new(2));
         let next_token_reader = Arc::clone(&next_token_arc);
@@ -115,8 +157,10 @@ impl GdbBackend {
                         if let Some(event) = parse_gdb_line(
                             &line,
                             &pending_evals_reader,
+                            &pending_char_evals_reader,
                             &pending_var_creates_reader,
                             &pending_var_lists_reader,
+                            &pending_var_builds_reader,
                             &next_token_reader,
                             &cmd_tx_reader,
                         ) {
@@ -194,8 +238,10 @@ impl GdbBackend {
             _slave_fd: pty.slave,
             pty_master_write: Mutex::new(pty_master_write),
             pending_evals,
+            pending_char_evals,
             pending_var_creates,
             pending_var_lists,
+            pending_var_builds,
             next_token: next_token_arc,
         })
     }
@@ -327,8 +373,10 @@ impl GdbBackend {
 fn parse_gdb_line(
     line: &str,
     pending_evals: &Mutex<HashMap<u64, String>>,
+    pending_char_evals: &Mutex<HashMap<u64, (String, String)>>,
     pending_var_creates: &Mutex<HashMap<u64, String>>,
     pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    pending_var_builds: &Mutex<HashMap<String, PendingVarBuild>>,
     next_token: &Arc<Mutex<u64>>,
     cmd_tx: &mpsc::Sender<String>,
 ) -> Option<GdbEvent> {
@@ -365,14 +413,14 @@ fn parse_gdb_line(
             .map(GdbEvent::StackDepth)
     } else if line.contains(",children=[") {
         // -var-list-children レスポンス
-        parse_var_list_children_response(line, pending_var_lists, cmd_tx)
+        parse_var_list_children_response(line, pending_var_lists, pending_var_builds, pending_char_evals, next_token, cmd_tx)
     } else if line.contains("^done,name=") && line.contains(",numchild=") {
         // -var-create レスポンス（イベントは発行せず follow-up コマンドを送信）
-        handle_var_create_response(line, pending_var_creates, pending_var_lists, next_token, cmd_tx);
+        handle_var_create_response(line, pending_var_creates, pending_var_lists, pending_var_builds, next_token, cmd_tx);
         None
     } else if line.contains("^done,value=") {
-        // -data-evaluate-expression レスポンス（配列値）
-        parse_array_value_response(line, pending_evals)
+        // -data-evaluate-expression レスポンス（配列値 または char 配列メンバ値）
+        parse_eval_response(line, pending_evals, pending_char_evals)
     } else if line.starts_with('@') {
         // GDB/MI 経由でのプログラム出力（set inferior-tty 使用時は通常発生しない）
         parse_program_output(line).map(GdbEvent::ProgramOutput)
@@ -387,6 +435,7 @@ fn handle_var_create_response(
     line: &str,
     pending_var_creates: &Mutex<HashMap<u64, String>>,
     pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    pending_var_builds: &Mutex<HashMap<String, PendingVarBuild>>,
     next_token: &Arc<Mutex<u64>>,
     cmd_tx: &mpsc::Sender<String>,
 ) {
@@ -397,7 +446,7 @@ fn handle_var_create_response(
         let mut map = pending_var_creates.lock().unwrap();
         match map.remove(&token) {
             Some(v) => v,
-            None => return, // このトークンは pending_var_creates にない
+            None => return,
         }
     };
 
@@ -410,12 +459,22 @@ fn handle_var_create_response(
         .unwrap_or(0);
 
     if numchild == 0 {
-        // 子なし → var オブジェクトを削除して終了
         let _ = cmd_tx.try_send(format!("-var-delete {}", gdb_var_name));
         return;
     }
 
-    // var-list-children 用の新しいトークンを割り当てる
+    // ツリー構築状態を初期化する
+    {
+        let mut builds = pending_var_builds.lock().unwrap();
+        builds.insert(gdb_var_name.clone(), PendingVarBuild {
+            original_var: orig_var_name,
+            outstanding: 1,
+            nodes: HashMap::new(),
+            children: HashMap::new(),
+        });
+    }
+
+    // ルートの -var-list-children を発行する
     let list_token = {
         let mut t = next_token.lock().unwrap();
         *t += 1;
@@ -423,7 +482,8 @@ fn handle_var_create_response(
     };
     {
         let mut map = pending_var_lists.lock().unwrap();
-        map.insert(list_token, (gdb_var_name.clone(), orig_var_name));
+        // (root GDB var名, 列挙対象 GDB var名)
+        map.insert(list_token, (gdb_var_name.clone(), gdb_var_name.clone()));
     }
     let _ = cmd_tx.try_send(format!(
         "{}-var-list-children --all-values {}",
@@ -431,39 +491,166 @@ fn handle_var_create_response(
     ));
 }
 
-/// `M^done,numchild="K",children=[child={...},...]` をパースして StructMembers を返す
+/// `M^done,numchild="K",children=[child={...},...]` をパースしてツリーを構築する。
+/// すべての子が揃ったら StructMembers イベントを返す。
 fn parse_var_list_children_response(
     line: &str,
     pending_var_lists: &Mutex<HashMap<u64, (String, String)>>,
+    pending_var_builds: &Mutex<HashMap<String, PendingVarBuild>>,
+    pending_char_evals: &Mutex<HashMap<u64, (String, String)>>,
+    next_token: &Arc<Mutex<u64>>,
     cmd_tx: &mpsc::Sender<String>,
 ) -> Option<GdbEvent> {
     let caret = line.find('^')?;
     let token: u64 = line[..caret].parse().ok()?;
 
-    let (gdb_var_name, orig_var_name) = {
+    let (root_gdb_var, listed_gdb_var) = {
         let mut map = pending_var_lists.lock().unwrap();
         map.remove(&token)?
     };
 
-    let members = parse_children(line).unwrap_or_default();
+    // 子要素をパースする
+    let raw_children = parse_children_raw(line).unwrap_or_default();
 
-    // var オブジェクトを削除する
-    let _ = cmd_tx.try_send(format!("-var-delete {}", gdb_var_name));
+    // ネストした構造体に対して新しいトークンを割り当てる。
+    // char 配列メンバは -data-evaluate-expression で別途取得するため sub_fetch から除外する。
+    // (既存コードで !child.type_name.starts_with("char [") 済み)
+    let sub_fetch: Vec<(u64, String)> = {
+        let mut sub = Vec::new();
+        let mut nt = next_token.lock().unwrap();
+        for child in &raw_children {
+            if child.num_children > 0 && !child.type_name.starts_with("char [") {
+                *nt += 1;
+                sub.push((*nt, child.gdb_var_name.clone()));
+            }
+        }
+        sub
+    };
 
-    tracing::info!(
-        "var-list-children応答: {} → {} メンバ",
-        orig_var_name,
-        members.len()
-    );
-    Some(GdbEvent::StructMembers { var_name: orig_var_name, members })
+    // pending_var_lists にサブフェッチを登録する（builds のロック前に行う）
+    {
+        let mut lists = pending_var_lists.lock().unwrap();
+        for (t, gdb_var) in &sub_fetch {
+            lists.insert(*t, (root_gdb_var.clone(), gdb_var.clone()));
+        }
+    }
+
+    // ツリー構築状態を更新し、char 配列メンバの eval 情報を収集する
+    let (maybe_event, char_evals) = {
+        let mut builds = pending_var_builds.lock().unwrap();
+        let build = builds.get_mut(&root_gdb_var)?;
+        let original_var = build.original_var.clone();
+
+        // 今回の応答で得た子ノードを登録する。
+        // char 配列メンバの value は "[N]" を空文字列に置き換える（後で CharArrayValue で上書き）。
+        let mut child_names = Vec::new();
+        let mut char_evals_local: Vec<(u64, String, String)> = Vec::new(); // (token, c_expr, member_path)
+        {
+            let mut nt = next_token.lock().unwrap();
+            for child in &raw_children {
+                let is_char_array = child.type_name.starts_with("char [");
+                let value = if is_char_array {
+                    String::new()
+                } else {
+                    child.value.clone()
+                };
+                build.nodes.insert(child.gdb_var_name.clone(), NodeData {
+                    exp: child.exp.clone(),
+                    type_name: child.type_name.clone(),
+                    value,
+                });
+                child_names.push(child.gdb_var_name.clone());
+
+                if is_char_array {
+                    // GDB var名から root プレフィックスを除いた相対パスを求める
+                    let member_path = child.gdb_var_name
+                        .strip_prefix(&format!("{}.", root_gdb_var))
+                        .unwrap_or(&child.exp)
+                        .to_string();
+                    let c_expr = format!("{}.{}", original_var, member_path);
+                    *nt += 1;
+                    char_evals_local.push((*nt, c_expr, member_path));
+                }
+            }
+        }
+        build.children.insert(listed_gdb_var, child_names);
+
+        // outstanding を更新する（サブフェッチ分追加、この応答分を減算）
+        build.outstanding += sub_fetch.len();
+        build.outstanding = build.outstanding.saturating_sub(1);
+
+        let event = if build.outstanding == 0 {
+            // 全子が揃ったのでツリーをアセンブルしてイベントを生成する
+            let members = assemble_members(build, &root_gdb_var);
+            builds.remove(&root_gdb_var);
+            tracing::info!("StructMembers完成: {} ({} メンバ)", original_var, members.len());
+            Some(GdbEvent::StructMembers { var_name: original_var.clone(), members })
+        } else {
+            None
+        };
+
+        // char 配列 eval エントリを pending_char_evals に登録する
+        {
+            let mut char_map = pending_char_evals.lock().unwrap();
+            for (t, _, member_path) in &char_evals_local {
+                char_map.insert(*t, (original_var.clone(), member_path.clone()));
+            }
+        }
+
+        (event, char_evals_local)
+    };
+
+    // 完了時に root var オブジェクトを削除する
+    if maybe_event.is_some() {
+        let _ = cmd_tx.try_send(format!("-var-delete {}", root_gdb_var));
+    }
+
+    // char 配列メンバの値を -data-evaluate-expression で取得する
+    for (t, c_expr, _) in &char_evals {
+        tracing::info!("char配列eval送信: token={} expr={}", t, c_expr);
+        let _ = cmd_tx.try_send(format!(
+            "{}-data-evaluate-expression \"{}\"",
+            t, c_expr
+        ));
+    }
+
+    // ネストした構造体の -var-list-children を発行する
+    for (t, gdb_var) in &sub_fetch {
+        let _ = cmd_tx.try_send(format!(
+            "{}-var-list-children --all-values {}",
+            t, gdb_var
+        ));
+    }
+
+    maybe_event
 }
 
-/// `children=[child={name="v.x",exp="x",numchild="0",value="10",type="int"},...` をパースする
-fn parse_children(line: &str) -> Option<Vec<StructMember>> {
+/// PendingVarBuild からメンバツリーを再帰的に組み立てる
+fn assemble_members(build: &PendingVarBuild, parent_gdb_var: &str) -> Vec<StructMember> {
+    let child_names = build.children.get(parent_gdb_var).cloned().unwrap_or_default();
+    child_names
+        .iter()
+        .filter_map(|gdb_name| {
+            let node = build.nodes.get(gdb_name)?;
+            let children = assemble_members(build, gdb_name);
+            Some(StructMember {
+                name: node.exp.clone(),
+                type_name: node.type_name.clone(),
+                value: node.value.clone(),
+                var_obj_name: gdb_name.clone(),
+                children,
+            })
+        })
+        .collect()
+}
+
+/// `children=[child={name="v.x",exp="x",numchild="0",value="10",type="int"},...` をパースして
+/// RawChild のベクタを返す
+fn parse_children_raw(line: &str) -> Option<Vec<RawChild>> {
     let start = line.find("children=[")? + "children=[".len();
     let list = &line[start..];
 
-    let mut members = Vec::new();
+    let mut children = Vec::new();
     let mut remaining = list;
 
     loop {
@@ -499,32 +686,46 @@ fn parse_children(line: &str) -> Option<Vec<StructMember>> {
         let block = &remaining[..end];
         remaining = &remaining[end + 1..];
 
-        // exp フィールドがメンバ名（"var1.x" でなく "x" の部分）
-        let name = extract_quoted_value(block, "exp").unwrap_or_default();
+        let gdb_var_name = extract_quoted_value(block, "name").unwrap_or_default();
+        let exp = extract_quoted_value(block, "exp").unwrap_or_default();
         let type_name = extract_quoted_value(block, "type").unwrap_or_default();
         let value = extract_quoted_value(block, "value").unwrap_or_default();
         let num_children: usize = extract_quoted_value(block, "numchild")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
-        if !name.is_empty() {
-            members.push(StructMember { name, type_name, value, num_children });
+        if !exp.is_empty() {
+            children.push(RawChild { gdb_var_name, exp, type_name, value, num_children });
         }
     }
 
-    Some(members)
+    Some(children)
 }
 
-/// `N^done,value="..."` をパースし、pending_evals からトークン→変数名を解決して ArrayValue を返す
-fn parse_array_value_response(
+/// `N^done,value="..."` をパースし、pending_evals / pending_char_evals からトークンを解決して
+/// ArrayValue または CharArrayValue イベントを返す
+fn parse_eval_response(
     line: &str,
     pending_evals: &Mutex<HashMap<u64, String>>,
+    pending_char_evals: &Mutex<HashMap<u64, (String, String)>>,
 ) -> Option<GdbEvent> {
     // トークン番号を行頭から抽出する
     let caret = line.find('^')?;
     let token: u64 = line[..caret].parse().ok()?;
 
-    // pending_evals からトークンに対応する変数名を取り出す
+    // pending_char_evals を優先して確認する
+    let char_entry = {
+        let mut map = pending_char_evals.lock().unwrap();
+        map.remove(&token)
+    };
+
+    if let Some((var_name, member_name)) = char_entry {
+        let value = extract_raw_array_value(line, caret)?;
+        tracing::info!("char配列値応答: {}.{} = {}", var_name, member_name, value);
+        return Some(GdbEvent::CharArrayValue { var_name, member_name, value });
+    }
+
+    // pending_evals を確認する
     let var_name = {
         let mut map = pending_evals.lock().unwrap();
         map.remove(&token)?
