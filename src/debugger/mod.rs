@@ -4,8 +4,9 @@ use std::path::Path;
 pub mod gdb;
 pub mod types;
 
-pub use types::{Breakpoint, DebuggerState, Frame, StructMember, Variable};
+pub use types::{Breakpoint, DebuggerState, StructMember, Variable};
 
+#[allow(dead_code)]
 pub trait Debugger: Send {
     fn next(&mut self) -> Result<()>;
     fn step(&mut self) -> Result<()>;

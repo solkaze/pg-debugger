@@ -2,14 +2,7 @@ use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// C ソースファイルを `gcc -g` でコンパイルし、出力バイナリのパスを返す。
-/// コンパイルに失敗した場合は stderr の内容を含むエラーを返す。
-pub async fn compile_c(source: &Path) -> Result<PathBuf> {
-    let s = source.to_str().unwrap_or("output");
-    compile_c_files(&[s]).await
-}
-
-/// 複数の C ソースファイルを `gcc -g` でコンパイルし、出力バイナリのパスを返す。
+///複数の C ソースファイルを `gcc -g` でコンパイルし、出力バイナリのパスを返す。
 /// 出力ファイル名は最初のファイルの stem を使う。
 /// コンパイルに失敗した場合は stderr の内容を含むエラーを返す。
 pub async fn compile_c_files(sources: &[&str]) -> Result<PathBuf> {

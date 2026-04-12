@@ -9,11 +9,9 @@ use crate::debugger::{Breakpoint, StructMember, Variable};
 
 /// ステップイン時に保存する呼び出し元フレームの表示状態
 pub struct FrameView {
-    pub file: PathBuf,
     pub source_lines: Vec<String>,
     /// ハイライト行（1-origin、赤でマーク）
     pub highlight_line: usize,
-    pub scroll_offset: usize,
     /// このフレームが停止していたときの関数名
     pub func_name: String,
 }
@@ -426,10 +424,8 @@ impl App {
                     // prev_stop_frameはcurrent_funcを更新する前に保存する（呼び出し元の関数名を保持するため）
                     if self.current_file.is_some() {
                         self.prev_stop_frame = Some(FrameView {
-                            file: self.current_file.clone().unwrap_or_default(),
                             source_lines: self.source_lines.clone(),
                             highlight_line: self.current_line.unwrap_or(0) as usize,
-                            scroll_offset: self.source_scroll,
                             func_name: self.current_func.clone(),
                         });
                     }

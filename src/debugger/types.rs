@@ -39,6 +39,7 @@ pub struct Frame {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DebuggerState {
     pub file: Option<PathBuf>,
     pub line: Option<u32>,
