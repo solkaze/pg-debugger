@@ -261,7 +261,7 @@ impl GdbBackend {
     }
 
     /// inferior の TTY を PTY スレーブに設定してから実行開始する
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self, prog_args: &[String]) -> Result<()> {
         self.send_command(&format!(
             "-interpreter-exec console \"set inferior-tty {}\"",
             self.pts_path.display()
@@ -269,6 +269,10 @@ impl GdbBackend {
         // シェル経由でなく直接プログラムを起動することで LD_PRELOAD 等の干渉を防ぐ
         self.send_command("-interpreter-exec console \"set startup-with-shell off\"")?;
         self.send_command("-break-insert main")?;
+        if !prog_args.is_empty() {
+            let args_str = prog_args.join(" ");
+            self.send_command(&format!("-exec-arguments {}", args_str))?;
+        }
         self.send_command("-exec-run")?;
         Ok(())
     }

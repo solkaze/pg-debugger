@@ -43,6 +43,8 @@ pub struct App {
     source_files: Vec<PathBuf>,
     /// Makefile モードのターゲット（None=makeモードでない、Some(None)=デフォルトターゲット、Some(Some(t))=指定ターゲット）
     make_target: Option<Option<String>>,
+    /// デバッグ対象プログラムへのコマンドライン引数
+    prog_args: Vec<String>,
     /// 現在停止しているソースファイル
     pub current_file: Option<PathBuf>,
     /// 現在停止している行番号
@@ -154,12 +156,13 @@ impl App {
         executable: Option<PathBuf>,
         source_files: Vec<PathBuf>,
         make_target: Option<Option<String>>,
+        prog_args: Vec<String>,
     ) -> Result<Self> {
         let mut gdb = None;
 
         if let Some(ref exe) = executable {
             let backend = GdbBackend::new(exe).await?;
-            backend.start()?;
+            backend.start(&prog_args)?;
             gdb = Some(backend);
         }
 
@@ -169,6 +172,7 @@ impl App {
             executable,
             source_files,
             make_target,
+            prog_args,
             current_file: None,
             current_line: None,
             status_message: "準備完了 – n: Next  s: Step  f: Finish  c: Continue  q: Quit".to_string(),
@@ -252,7 +256,7 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = backend.start() {
+        if let Err(e) = backend.start(&self.prog_args) {
             self.status_message = format!("GDB 起動エラー: {}", e);
             return;
         }
@@ -599,11 +603,12 @@ impl App {
                     self.prev_stack_depth = current_depth;
                 }
                 GdbEvent::Exited => {
-                    // プログラム終了時はコールスタック表示をクリアする
                     self.frame_stack.clear();
                     self.prev_stack_depth = 1;
                     self.prev_stop_frame = None;
                     self.program_running = false;
+                    self.status_message = "プログラム終了（rキーで再起動）".to_string();
+                    // display_variables は最終ステップ時点の値をそのまま保持する
                 }
             }
         }

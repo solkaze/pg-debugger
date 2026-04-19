@@ -22,11 +22,20 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_writer(log_file).init();
 
     // コマンドライン引数から実行ファイルパスを取得
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let all_args: Vec<String> = std::env::args().skip(1).collect();
+
+    // "--" で pg-debugger の引数とプログラムへの引数を分割する
+    let split_pos = all_args.iter().position(|a| a == "--");
+    let (args, prog_args) = if let Some(pos) = split_pos {
+        (&all_args[..pos], all_args[pos + 1..].to_vec())
+    } else {
+        (&all_args[..], vec![])
+    };
 
     if args.is_empty() {
-        eprintln!("使い方: pg-debugger <ファイル.c> [ファイル2.c ...]");
-        eprintln!("        pg-debugger --make [ターゲット]");
+        eprintln!("使い方: pg-debugger <ファイル.c> [ファイル2.c ...] [-- 引数...]");
+        eprintln!("        pg-debugger --make [ターゲット] [-- 引数...]");
+        eprintln!("        pg-debugger ./a.out [-- 引数...]");
         std::process::exit(1);
     }
 
@@ -76,7 +85,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, executable, source_files, make_target).await;
+    let result = run_app(&mut terminal, executable, source_files, make_target, prog_args).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -90,8 +99,9 @@ async fn run_app(
     executable: Option<std::path::PathBuf>,
     source_files: Vec<std::path::PathBuf>,
     make_target: Option<Option<String>>,
+    prog_args: Vec<String>,
 ) -> Result<()> {
-    let mut app = App::new(executable, source_files, make_target).await?;
+    let mut app = App::new(executable, source_files, make_target, prog_args).await?;
 
     loop {
         // GDB からのイベントを処理してから描画する
